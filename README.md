@@ -13,6 +13,7 @@ over a procedurally generated landscape, reflecting the terrain and casting shad
 See also:
 - [NoiSQL — Generating Music With SQL Queries](https://github.com/ClickHouse/NoiSQL)
 - [SQL Mandelbrot Benchmark](https://github.com/ClickHouse/sql-mandelbrot-benchmark)
+- [Click-V: A RISC-V emulator built with ClickHouse SQL](https://github.com/SpencerTorres/Click-V)
 - [DOOMHouse is a "Doom-like" game engine that renders the 3D graphics entirely in ClickHouse SQL](https://github.com/arniwesth/DoomHouse)
 
 ## How it works

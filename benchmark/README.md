@@ -75,17 +75,17 @@ reference:
 
 | Engine | Wall time | ~µs / pixel |
 |---|---:|---:|
-| ClickHouse | **11 min 38 s** (698 s) | ≈ 211 (after ~50 s fixed analysis) |
+| ClickHouse | **11 min 48 s** (708 s) | ≈ 214 (after ~50 s fixed analysis) |
 | CedarDB | **9 min 40 s** (580 s) | ≈ 189 |
 | DuckDB | **does not compile** — fails at any size, even 192 × 90 | — |
 
 Same scene, same image (mean per-channel difference ≈ 1.0 / 255 vs the ClickHouse reference;
 the renders are visually identical — see `out/clickhouse_full.png` and `out/cedardb_full.png`).
 
-On raw per-pixel throughput ClickHouse and CedarDB are close (≈ 211 vs ≈ 189 µs/pixel).
+On raw per-pixel throughput ClickHouse and CedarDB are close (≈ 214 vs ≈ 189 µs/pixel).
 CedarDB's advantage is structural: it both *compiles* the scene DuckDB can't and carries no
 large fixed analysis cost — ClickHouse spends a fixed ~50 s analysing its deeply-nested lambda
-tree before tracing any pixels (a small slice of 698 s at full resolution, but the dominant
+tree before tracing any pixels (a small slice of 708 s at full resolution, but the dominant
 cost at small sizes). DuckDB never enters the comparison: its planner cannot compile a query
 with more than one ray-march at *any* resolution — the 192 × 90 query fails exactly as the
 full-resolution one does.
@@ -98,8 +98,8 @@ full-resolution one does.
 **1. ClickHouse pays a large *fixed* query-analysis cost before tracing any pixels.** The
 renderer is a deeply nested tree of ~30 lambdas, and expanding/analysing it takes ~50 s
 essentially regardless of resolution (a 16 × 16 render still takes ~50 s). At full resolution
-that is only ~7 % of the 698 s — per-pixel compute dominates — but at small sizes it dominates
-entirely, which is why ClickHouse's true per-pixel throughput (≈ 211 µs/pixel) is best read
+that is only ~7 % of the 708 s — per-pixel compute dominates — but at small sizes it dominates
+entirely, which is why ClickHouse's true per-pixel throughput (≈ 214 µs/pixel) is best read
 after subtracting the fixed analysis cost.
 
 **2. The DuckDB port works piece-by-piece but the *whole* renderer overwhelms DuckDB's

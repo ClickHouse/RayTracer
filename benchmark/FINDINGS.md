@@ -157,7 +157,7 @@ tracers evaluating the marches in different float order, with no anti-aliasing t
 
 | engine | 192 × 90 (17 k px) | 2560 × 1200 (3.07 M px) | ~µs / pixel at full res |
 |---|---:|---:|---:|
-| ClickHouse (`arrayFold` + lambdas) | 54.4 s | **698 s** (11 m 38 s) | ≈ 211 (after ~50 s analysis) |
+| ClickHouse (`arrayFold` + lambdas) | 54.4 s | **708 s** (11 m 48 s) | ≈ 214 (after ~50 s analysis) |
 | CedarDB (recursive CTEs) | 4.3 s | **580 s** (9 m 40 s) | ≈ 189 |
 | DuckDB | cannot compile | cannot compile | — |
 
@@ -165,7 +165,7 @@ The two resolutions measure different things. At **192 × 90** CedarDB looks ~12
 that gap is almost all ClickHouse's *fixed* lambda-tree analysis cost (~50 s, essentially
 resolution-independent) — not ray-tracing throughput. At **2560 × 1200** the work is
 3.07 M pixels of actual compute, the fixed cost washes out, and the gap collapses to **~1.2×**
-(≈ 211 µs/pixel for ClickHouse after subtracting analysis, vs ≈ 189 µs/pixel for CedarDB).
+(≈ 214 µs/pixel for ClickHouse after subtracting analysis, vs ≈ 189 µs/pixel for CedarDB).
 
 So the honest takeaway is *not* "CedarDB beats ClickHouse at ray tracing" — on raw per-pixel
 throughput they are close. It is: (1) CedarDB *compiles* the scene that DuckDB cannot, and

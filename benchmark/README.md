@@ -60,6 +60,9 @@ python3 tools.py compare out/clickhouse.tsv out/duckdb.tsv
 
 ### Findings
 
+> A full, self-contained write-up of the cross-engine portability study is in
+> [`FINDINGS.md`](FINDINGS.md). The summary below is the short version.
+
 **1. ClickHouse time here is dominated by query *analysis*, not pixel compute.** This is a
 deeply nested tree of ~30 lambdas; expanding/analysing it takes ~50 s regardless of
 resolution (16×16 ≈ 50 s, 192×90 ≈ 60 s). At low resolution the ClickHouse number is mostly a

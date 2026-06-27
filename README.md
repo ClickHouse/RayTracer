@@ -11,9 +11,9 @@ Kensler's famous Pixar business-card ray tracer — and, in the scene above, set
 over a procedurally generated landscape, reflecting the terrain and casting shadows on the hills.
 
 See also:
-- [https://github.com/ClickHouse/NoiSQL](NoiSQL — Generating Music With SQL Queries)
-- [https://github.com/ClickHouse/sql-mandelbrot-benchmark](SQL Mandelbrot Benchmark)
-- [https://github.com/arniwesth/DoomHouse](DOOMHouse is a "Doom-like" game engine that renders the 3D graphics entirely in ClickHouse SQL)
+- [NoiSQL — Generating Music With SQL Queries](https://github.com/ClickHouse/NoiSQL)
+- [SQL Mandelbrot Benchmark](https://github.com/ClickHouse/sql-mandelbrot-benchmark)
+- [DOOMHouse is a "Doom-like" game engine that renders the 3D graphics entirely in ClickHouse SQL](https://github.com/arniwesth/DoomHouse)
 
 ## How it works
 

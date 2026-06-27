@@ -139,9 +139,11 @@ silhouette / shadow-boundary pixels, the inherent sub-pixel disagreement of two 
 ray tracers without anti-aliasing). This is the crisp contrast with DuckDB: the *recursive
 CTE* is a relation (data-level iteration with a bounded per-step body), so the planner never
 faces the exponential expression blow-up that defeats DuckDB's macro expansion. Full write-up
-in [`FINDINGS.md`](FINDINGS.md). Two CedarDB engine bugs/quirks found along the way:
-subscripting a `CASE`-produced array aborts the server (worked around with `mix()` blends),
-and `LATERAL` inside a recursive term also aborts (the marches inline their step expressions).
+in [`FINDINGS.md`](FINDINGS.md). One genuine CedarDB engine bug found along the way and
+reported upstream ([cedardb/issues#71](https://github.com/cedardb/issues/issues/71)):
+subscripting a `CASE`-produced array under `ORDER BY` aborts the server (worked around with
+`mix()` blends). (`LATERAL` in a recursive term, which I first suspected, turned out to work
+fine — that crash was the same `CASE`-array bug.)
 
 **4. Postgres / MySQL have no lambdas *and* no advanced recursive planner.** A faithful port
 still needs a recursive-CTE reformulation of every loop, but without CedarDB's planner the

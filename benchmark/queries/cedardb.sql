@@ -86,7 +86,7 @@ cyls(a, b, r) AS (VALUES
 -- ============================ bounce b1 ============================
 in_b1 AS (SELECT idx, o, d, thr, acc FROM px WHERE alive > 0.5),
 
--- terrain height-field march (lockstep; inlined, no LATERAL in recursion)
+-- terrain height-field march (lockstep; per-step expressions inlined)
 m_b1 AS (
   SELECT idx, o, d,
          CASE WHEN d[3] < -0.001 THEN greatest(0.05, (o[3]-1.55)/(-d[3])) ELSE 0.05 END AS t,
@@ -306,7 +306,7 @@ rays_b1 AS (
 -- ============================ bounce b2 ============================
 in_b2 AS (SELECT idx, o, d, thr, acc FROM rays_b1 WHERE alive > 0.5),
 
--- terrain height-field march (lockstep; inlined, no LATERAL in recursion)
+-- terrain height-field march (lockstep; per-step expressions inlined)
 m_b2 AS (
   SELECT idx, o, d,
          CASE WHEN d[3] < -0.001 THEN greatest(0.05, (o[3]-1.55)/(-d[3])) ELSE 0.05 END AS t,

@@ -169,13 +169,22 @@ the gap. The honest takeaway is not "CedarDB beats ClickHouse at ray tracing" bu
 program, the recursive-CTE formulation that only CedarDB's planner could digest is also the
 one that isn't analysis-bound."
 
-**Two CedarDB engine bugs / quirks** surfaced (worth reporting upstream):
-  * subscripting an array produced by a `CASE`/`if` expression aborts the server
-    (`ArrayRuntime` assertion) — every array choice is an arithmetic `mix()` blend instead;
-  * `LATERAL` inside a *recursive* term also aborts — the marches inline their step
-    expressions rather than binding them with `LATERAL`;
-  * integer literals default to `int32` (the LCG hash needs explicit `bigint`), and the
-    intentional `LATERAL` "let" joins need `SET implicit_cross_products = ON`.
+**One genuine CedarDB engine bug** surfaced, reported upstream as
+[cedardb/issues#71](https://github.com/cedardb/issues/issues/71):
+  * subscripting (≥ 2 ×) an array column produced by a `CASE`/`if` expression — when a branch
+    is a function returning an array and the query has `ORDER BY` — aborts the server
+    (`ArrayRuntime.cpp:937` `ArrayHeader` assertion). All four ingredients are required; drop
+    any one and it runs. Worked around throughout by making every array choice an arithmetic
+    `mix()` blend on a 0/1 selector rather than a `CASE` returning an array.
+
+The other rough edges turned out **not** to be bugs, on closer testing:
+  * `LATERAL` inside a *recursive* term works fine (an isolated repro runs correctly); the
+    marches inline their per-step expressions purely as a style choice. (The crash I first
+    blamed on this was actually the `CASE`-array bug above, which the same query also hit.)
+  * integer literals default to `int32` — standard PostgreSQL behaviour, so the LCG hash needs
+    explicit `bigint`; the intentional `LATERAL` "let" joins need `SET implicit_cross_products
+    = ON` (an intentional guard); composite types and subqueries-in-function-bodies are
+    documented-as-unimplemented, not crashes.
 
 ### Postgres / MySQL — no SQL lambdas *and* no advanced recursive planner
 

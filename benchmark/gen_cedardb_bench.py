@@ -18,14 +18,16 @@ CedarDB has no SQL lambdas / higher-order array functions, so the port is
   fixed-step terrain shadow loop  -> set-based join over generate_series(0,23)
   cityHash/intHash                -> the same portable LCG hash (pure arithmetic)
 
-Two CedarDB engine quirks shape the port:
-  * subscripting an array produced by CASE/if aborts the server, so every array
-    choice is an arithmetic mix() blend (or vm()-by-0/1 + va()) on a scalar
-    selector, never a CASE returning an array;
-  * LATERAL in a *recursive* term also aborts, so the marches inline their
-    per-step expressions.
-A zero-safe vn() keeps masked-out candidate normals finite (mix(a,b,0) would
-otherwise turn an inf normal into NaN).
+One genuine CedarDB engine bug shapes the port (reported upstream as
+cedardb/issues#71): subscripting (>=2x) an array column produced by a CASE/if
+expression, when a branch is a function returning an array and the query has
+ORDER BY, aborts the server (ArrayRuntime.cpp:937). So every array choice here is
+an arithmetic mix() blend (or vm()-by-0/1 + va()) on a scalar selector, never a
+CASE returning an array. A zero-safe vn() keeps masked-out candidate normals
+finite (mix(a,b,0) would otherwise turn an inf normal into NaN).
+
+(LATERAL inside a recursive term works fine; the marches inline their per-step
+expressions as a style choice, not out of necessity.)
 
 Usage:  gen_cedardb_bench.py [W] [H] [DEPTH]   (default 48 24 2)
 """
@@ -104,7 +106,7 @@ def emit_bounce(S, IN):
 -- ============================ bounce {S} ============================
 in_{S} AS (SELECT idx, o, d, thr, acc FROM {IN} WHERE alive > 0.5),
 
--- terrain height-field march (lockstep; inlined, no LATERAL in recursion)
+-- terrain height-field march (lockstep; per-step expressions inlined)
 m_{S} AS (
   SELECT idx, o, d,
          CASE WHEN d[3] < -0.001 THEN greatest(0.05, (o[3]-1.55)/(-d[3])) ELSE 0.05 END AS t,

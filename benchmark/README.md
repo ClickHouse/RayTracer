@@ -5,10 +5,11 @@ each renders the *same* image, and measuring how long each takes.
 
 ## The scene
 
-A small, deterministic version of [`../queries/clickhouse_terrain.sql`](../queries/clickhouse_terrain.sql):
+A deterministic version of [`../queries/clickhouse_terrain.sql`](../queries/clickhouse_terrain.sql),
+benchmarked at **full resolution — 2560 × 1200 (3.07 M pixels), 1 centred sample per pixel,
+2 bounce depth** (the hero-image size). The queries are parameterised, so any resolution can be
+generated.
 
-- **192 × 90**, 1 centred sample per pixel, 2 bounce depth — small on purpose, so even slow
-  engines finish in reasonable time.
 - **Deterministic**: no anti-alias jitter, no soft-shadow jitter (the light is a fixed point),
   so every engine should produce identical pixels up to floating-point rounding.
 - **Portable hash**: the terrain noise uses a hand-rolled integer LCG hash (two rounds, all
@@ -31,24 +32,23 @@ benchmark/
 ├── queries/                  # the generated per-engine queries
 │   ├── clickhouse.sql
 │   └── cedardb.sql
-└── out/                      # rendered images and pixel dumps
-    ├── clickhouse.tsv        # the reference pixel dump (192x90)
-    ├── clickhouse_192.png    # the reference image
-    └── cedardb_192.png       # the CedarDB render (visually identical)
+└── out/                      # full-resolution renders (2560x1200)
+    ├── clickhouse_full.png   # the reference image
+    └── cedardb_full.png      # the CedarDB render (visually identical)
 ```
 
 ## Running
 
 ```bash
-# ClickHouse reference (pixel dump + image)
-python3 gen_clickhouse_bench.py 192 90 2 data > queries/clickhouse.sql
+# ClickHouse reference (pixel dump + image), full resolution
+python3 gen_clickhouse_bench.py 2560 1200 2 data > queries/clickhouse.sql
 clickhouse local --queries-file queries/clickhouse.sql > out/clickhouse.tsv
-python3 tools.py render out/clickhouse.tsv 192 90 out/clickhouse.png
+python3 tools.py render out/clickhouse.tsv 2560 1200 out/clickhouse_full.png
 
 # CedarDB port (Postgres wire protocol; here on host port 5499)
-python3 gen_cedardb_bench.py 192 90 2 > queries/cedardb.sql
+python3 gen_cedardb_bench.py 2560 1200 2 > queries/cedardb.sql
 psql -h 127.0.0.1 -p 5499 -U postgres -d raytracer -q -f queries/cedardb.sql > out/cedardb.tsv
-python3 tools.py render out/cedardb.tsv 192 90 out/cedardb_192.png
+python3 tools.py render out/cedardb.tsv 2560 1200 out/cedardb_full.png
 
 # Compare an engine's dump against the reference
 python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
@@ -61,50 +61,46 @@ reference:
 
 ![full](out/cedardb_full.png)
 
-The benchmark itself runs at 192 × 90 by default (small, so all engines have a chance):
-
-![reference](out/clickhouse_192.png)
-
 ## Status & notes
 
 | Engine | Port approach | Status |
 |---|---|---|
-| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference, ~54 s (analysis-bound) |
-| **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference, **~4.3 s** (see below) |
-| **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ pieces work, but the planner can't compile a multi-march query (see below) |
+| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference; compiles & runs (analysis-bound) |
+| **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference; compiles & runs (see below) |
+| **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ planner can't compile a multi-march query — fails at *any* size, including 192 × 90 (see below) |
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
 | **MySQL** | no arrays/lambdas → recursive CTE / stored routines | not started (procedural) |
 
-### Timing (depth 2, same machine)
+### Results (full resolution: 2560 × 1200, depth 2, same machine)
 
-| Engine | 192 × 90 (17 k px) | 2560 × 1200 (3.07 M px) |
+| Engine | Wall time | ~µs / pixel |
 |---|---:|---:|
-| ClickHouse | 54.4 s | **11 min 38 s** (698 s) |
-| CedarDB | 4.3 s | **9 min 40 s** (580 s) |
-| DuckDB | cannot compile | cannot compile |
+| ClickHouse | **11 min 38 s** (698 s) | ≈ 211 (after ~50 s fixed analysis) |
+| CedarDB | **9 min 40 s** (580 s) | ≈ 189 |
+| DuckDB | **does not compile** — fails at any size, even 192 × 90 | — |
 
-Same scene, same image at both sizes (mean per-channel difference ≈ 1.0 / 255 vs the
-ClickHouse reference; the renders are visually identical — see `out/clickhouse_full.png` and
-`out/cedardb_full.png`).
+Same scene, same image (mean per-channel difference ≈ 1.0 / 255 vs the ClickHouse reference;
+the renders are visually identical — see `out/clickhouse_full.png` and `out/cedardb_full.png`).
 
-The two resolutions tell different halves of the story. At **192 × 90** the gap is ~12×, but
-that is almost entirely ClickHouse's *fixed* cost of analysing its deeply-nested lambda tree
-(~50 s regardless of resolution) — it is not ray-tracing throughput. At **2560 × 1200** both
-engines are dominated by per-pixel compute (3.07 M pixels), the fixed analysis cost washes
-out, and the gap collapses to **~1.2×**: ≈ 211 µs/pixel for ClickHouse (after subtracting the
-~50 s analysis) vs ≈ 189 µs/pixel for CedarDB. So on raw throughput the two are close;
-CedarDB's headline advantage is that it both *compiles* the scene DuckDB can't and isn't
-saddled with a large fixed analysis cost.
+On raw per-pixel throughput ClickHouse and CedarDB are close (≈ 211 vs ≈ 189 µs/pixel).
+CedarDB's advantage is structural: it both *compiles* the scene DuckDB can't and carries no
+large fixed analysis cost — ClickHouse spends a fixed ~50 s analysing its deeply-nested lambda
+tree before tracing any pixels (a small slice of 698 s at full resolution, but the dominant
+cost at small sizes). DuckDB never enters the comparison: its planner cannot compile a query
+with more than one ray-march at *any* resolution — the 192 × 90 query fails exactly as the
+full-resolution one does.
 
 ### Findings
 
 > A full, self-contained write-up of the cross-engine portability study is in
 > [`FINDINGS.md`](FINDINGS.md). The summary below is the short version.
 
-**1. ClickHouse time here is dominated by query *analysis*, not pixel compute.** This is a
-deeply nested tree of ~30 lambdas; expanding/analysing it takes ~50 s regardless of
-resolution (16×16 ≈ 50 s, 192×90 ≈ 60 s). At low resolution the ClickHouse number is mostly a
-fixed compile cost, not ray-tracing throughput.
+**1. ClickHouse pays a large *fixed* query-analysis cost before tracing any pixels.** The
+renderer is a deeply nested tree of ~30 lambdas, and expanding/analysing it takes ~50 s
+essentially regardless of resolution (a 16 × 16 render still takes ~50 s). At full resolution
+that is only ~7 % of the 698 s — per-pixel compute dominates — but at small sizes it dominates
+entirely, which is why ClickHouse's true per-pixel throughput (≈ 211 µs/pixel) is best read
+after subtracting the fixed analysis cost.
 
 **2. The DuckDB port works piece-by-piece but the *whole* renderer overwhelms DuckDB's
 planner.** `gen_duckdb_bench.py` faithfully translates the scene (tuples→`LIST`, lambdas→
@@ -135,8 +131,10 @@ tori marches) × 2 bounces ≈ 8 marches, which DuckDB cannot plan in any formul
 
 **Bottom line:** DuckDB's planner cannot compile this renderer once more than one ray-march is
 involved — because its `list_reduce` march is an *expression*, and nesting several of them
-blows up the expression the planner must analyse. (CedarDB, which expresses the same marches
-as *recursive CTEs* — relations, not expressions — has no such problem; see finding 3.) The
+blows up the expression the planner must analyse. This is resolution-independent: it fails at
+192 × 90 exactly as it fails at full resolution — the scene never compiles, so there is no
+pixel count small enough to make it run. (CedarDB, which expresses the same marches as
+*recursive CTEs* — relations, not expressions — has no such problem; see finding 3.) The
 only remaining DuckDB avenue is to split the renderer into ~20 *separate* `CREATE TABLE … AS`
 statements (≤ 1 march each, materialised to real tables between them) — possible, but
 non-idiomatic and with unknown execution speed.
@@ -148,7 +146,8 @@ chains in the main query, and every ray-march is a `WITH RECURSIVE` that advance
 lockstep. The bounce loop is unrolled (a recursive CTE can't be nested in another), so depth-2
 is two march pipelines; the full query carries **six recursive marches** (terrain + tori, ×
 primary and shadow, × two bounces) plus the analytic letters and planet — and CedarDB's
-planner handles it without complaint, in ~4.3 s at 192 × 90. The render matches the ClickHouse
+planner handles it without complaint, rendering the full 2560 × 1200 scene in ~9 min 40 s
+(≈ 189 µs/pixel). The render matches the ClickHouse
 reference (mean per-channel diff ≈ 1.0; the handful of pixels that differ by more are
 silhouette / shadow-boundary pixels, the inherent sub-pixel disagreement of two independent
 ray tracers without anti-aliasing). This is the crisp contrast with DuckDB: the *recursive

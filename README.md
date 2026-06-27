@@ -10,6 +10,11 @@ It renders the word **ClickHouse** as glassy, chrome lettering — in the spirit
 Kensler's famous Pixar business-card ray tracer — and, in the scene above, sets it floating
 over a procedurally generated landscape, reflecting the terrain and casting shadows on the hills.
 
+See also:
+- [https://github.com/ClickHouse/NoiSQL](NoiSQL — Generating Music With SQL Queries)
+- [https://github.com/ClickHouse/sql-mandelbrot-benchmark](SQL Mandelbrot Benchmark)
+- [https://github.com/arniwesth/DoomHouse](DOOMHouse is a "Doom-like" game engine that renders the 3D graphics entirely in ClickHouse SQL)
+
 ## How it works
 
 The whole renderer lives in one query:

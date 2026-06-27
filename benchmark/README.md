@@ -23,13 +23,18 @@ uniform dump is what we diff and render; only ClickHouse can also emit a real PN
 ```
 benchmark/
 ├── gen_clickhouse_bench.py   # emits the ClickHouse query (portable hash, PNG or TSV output)
+├── gen_cedardb_bench.py      # emits the CedarDB recursive-CTE port (args: W H DEPTH)
+├── gen_duckdb_bench.py       # emits the DuckDB port (does not compile; kept as evidence)
 ├── primfont2.py              # the glyph geometry (shared)
 ├── tools.py                  # render a TSV dump to PNG; diff two dumps for correctness
+├── FINDINGS.md               # the cross-engine portability write-up
 ├── queries/                  # the generated per-engine queries
-│   └── clickhouse.sql
+│   ├── clickhouse.sql
+│   └── cedardb.sql
 └── out/                      # rendered images and pixel dumps
-    ├── clickhouse.tsv        # the reference pixel dump
-    └── clickhouse_192.png    # the reference image
+    ├── clickhouse.tsv        # the reference pixel dump (192x90)
+    ├── clickhouse_192.png    # the reference image
+    └── cedardb_192.png       # the CedarDB render (visually identical)
 ```
 
 ## Running
@@ -40,8 +45,13 @@ python3 gen_clickhouse_bench.py 192 90 2 data > queries/clickhouse.sql
 clickhouse local --queries-file queries/clickhouse.sql > out/clickhouse.tsv
 python3 tools.py render out/clickhouse.tsv 192 90 out/clickhouse.png
 
-# Compare another engine's dump against the reference
-python3 tools.py compare out/clickhouse.tsv out/duckdb.tsv
+# CedarDB port (Postgres wire protocol; here on host port 5499)
+python3 gen_cedardb_bench.py 192 90 2 > queries/cedardb.sql
+psql -h 127.0.0.1 -p 5499 -U postgres -d raytracer -q -f queries/cedardb.sql > out/cedardb.tsv
+python3 tools.py render out/cedardb.tsv 192 90 out/cedardb_192.png
+
+# Compare an engine's dump against the reference
+python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
 ```
 
 ## The reference image (192 × 90)
@@ -52,11 +62,24 @@ python3 tools.py compare out/clickhouse.tsv out/duckdb.tsv
 
 | Engine | Port approach | Status |
 |---|---|---|
-| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference, ~55 s |
+| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference, ~54 s (analysis-bound) |
+| **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference, **~4.3 s** (see below) |
 | **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ pieces work, but the planner can't compile a multi-march query (see below) |
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
-| **CedarDB** | Postgres-compatible, same constraint | not started (procedural) |
 | **MySQL** | no arrays/lambdas → recursive CTE / stored routines | not started (procedural) |
+
+### Timing (192 × 90, depth 2, same machine)
+
+| Engine | Wall time | Notes |
+|---|---:|---|
+| ClickHouse | **54.4 s** | dominated by analysis of the nested lambda tree, not pixel compute |
+| CedarDB | **4.3 s** | set-based recursive CTEs; the planner is not analysis-bound here |
+| DuckDB | — | cannot compile the scene at all |
+
+Same scene, same image (mean per-channel difference ≈ 1.0 / 255 vs the ClickHouse
+reference; the two renders are visually identical). The ~12× gap is *formulation*,
+not raw engine power: ClickHouse's idiomatic `arrayFold`/lambda query spends its
+time in query analysis, while CedarDB's idiomatic recursive-CTE port does not.
 
 ### Findings
 
@@ -95,13 +118,31 @@ up. The combined scene needs ~4 marches per bounce (terrain, tori, the shadow's 
 tori marches) × 2 bounces ≈ 8 marches, which DuckDB cannot plan in any formulation tried
 (monolith, staged-flat, per-march CTEs all plan the whole query together).
 
-**Bottom line:** ClickHouse's analyzer compiles this whole renderer (~50 s) and runs it;
-DuckDB's planner cannot compile it at all once more than one ray-march is involved. That is
-the headline cross-engine result so far. The only remaining DuckDB avenue is to split the
-renderer into ~20 *separate* `CREATE TABLE … AS` statements (≤ 1 march each, materialised to
-real tables between them) — possible, but non-idiomatic and with unknown execution speed.
+**Bottom line:** DuckDB's planner cannot compile this renderer once more than one ray-march is
+involved — because its `list_reduce` march is an *expression*, and nesting several of them
+blows up the expression the planner must analyse. (CedarDB, which expresses the same marches
+as *recursive CTEs* — relations, not expressions — has no such problem; see finding 3.) The
+only remaining DuckDB avenue is to split the renderer into ~20 *separate* `CREATE TABLE … AS`
+statements (≤ 1 march each, materialised to real tables between them) — possible, but
+non-idiomatic and with unknown execution speed.
 
-**3. Postgres / CedarDB / MySQL have no lambdas or higher-order array functions in SQL at
-all**, so even the inner marches (`list_reduce` over the ray) can't be written as expressions.
-A faithful port needs procedural code (PL/pgSQL functions, MySQL stored routines) or a
-recursive-CTE reformulation of every loop — a substantially larger effort than DuckDB.
+**3. CedarDB compiles *and* runs the whole scene — fast — via recursive CTEs.** CedarDB has
+no SQL lambdas either, so the port is a different shape: vectors are `double precision[]`,
+leaf math is `CREATE FUNCTION` expression-bodies, intersection math lives in `LATERAL` "let"
+chains in the main query, and every ray-march is a `WITH RECURSIVE` that advances all rays in
+lockstep. The bounce loop is unrolled (a recursive CTE can't be nested in another), so depth-2
+is two march pipelines; the full query carries **six recursive marches** (terrain + tori, ×
+primary and shadow, × two bounces) plus the analytic letters and planet — and CedarDB's
+planner handles it without complaint, in ~4.3 s at 192 × 90. The render matches the ClickHouse
+reference (mean per-channel diff ≈ 1.0; the handful of pixels that differ by more are
+silhouette / shadow-boundary pixels, the inherent sub-pixel disagreement of two independent
+ray tracers without anti-aliasing). This is the crisp contrast with DuckDB: the *recursive
+CTE* is a relation (data-level iteration with a bounded per-step body), so the planner never
+faces the exponential expression blow-up that defeats DuckDB's macro expansion. Full write-up
+in [`FINDINGS.md`](FINDINGS.md). Two CedarDB engine bugs/quirks found along the way:
+subscripting a `CASE`-produced array aborts the server (worked around with `mix()` blends),
+and `LATERAL` inside a recursive term also aborts (the marches inline their step expressions).
+
+**4. Postgres / MySQL have no lambdas *and* no advanced recursive planner.** A faithful port
+still needs a recursive-CTE reformulation of every loop, but without CedarDB's planner the
+six-march query is a much riskier bet; these remain the procedural / recursive-CTE frontier.

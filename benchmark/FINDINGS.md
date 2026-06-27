@@ -6,12 +6,14 @@ shrunk to a small deterministic benchmark — on engines other than ClickHouse.
 
 > **TL;DR.** The renderer is a single SQL query built from ~30 nested lambdas and 4
 > `arrayFold` loops, several of which are *ray-marches* (iterating a signed-distance field
-> along the ray). ClickHouse's analyzer compiles and runs it. DuckDB — the only other engine
-> here with SQL lambdas — translates faithfully but its **planner cannot compile a query that
-> contains more than one ray-march**; it is superlinear (effectively exponential) in the
-> number of marches. Postgres / CedarDB / MySQL have no lambdas at all and need a
-> recursive-CTE / procedural reformulation. The headline result: *ClickHouse's analyzer
-> digests a renderer that DuckDB's planner chokes on.*
+> along the ray). **ClickHouse** compiles and runs it (analysis-bound, ~54 s at 192 × 90).
+> **DuckDB** — the only other engine here with SQL lambdas — translates faithfully but its
+> **planner cannot compile a query with more than one ray-march** (superlinear, effectively
+> exponential, in the number of marches). **CedarDB** has no lambdas, so it is re-expressed
+> set-based with the marches as **recursive CTEs** — and its planner compiles *and* runs the
+> full six-march scene in ~4.3 s, matching the reference image. The headline result: *the
+> ray-march is fatal to DuckDB as an expression but cheap to CedarDB as a relation* — how an
+> engine represents the loop decides whether the renderer compiles at all.
 
 ## What we set out to measure
 
@@ -118,38 +120,98 @@ non-idiomatic and with unknown execution speed. We did **not** pursue it.
 > and the staged DuckDB query is no larger in memory — the difference is purely how each
 > engine's planner handles deeply-nested higher-order expressions.
 
-### Postgres / CedarDB / MySQL — no SQL lambdas at all
+### CedarDB — ✅ compiles, runs, and matches — via recursive CTEs
 
-These dialects have **no lambdas or higher-order array functions**, so even a single inner
-march cannot be written as an expression the way it can in ClickHouse/DuckDB. A faithful port
-must reformulate every loop (the bounce loop *and* each ray-march) as a **recursive CTE**, or
-move the logic into procedural code (PL/pgSQL functions, MySQL stored routines). That is a
-strictly larger effort than the DuckDB port — and DuckDB, which *does* have lambdas, already
-could not compile the result.
+CedarDB also has no SQL lambdas, but it speaks the PostgreSQL dialect and has a much more
+advanced planner, so the port takes a completely different shape — *set-based and
+recursive-CTE driven* rather than expression driven:
 
-**CedarDB** is the most promising of the three: it speaks the Postgres dialect but has a much
-more advanced query planner/optimizer, so a recursive-CTE reformulation has a real chance of
-compiling where DuckDB's did not. That is the next experiment (see below).
+| ClickHouse / DuckDB | CedarDB |
+|---|---|
+| tuple / `LIST` | `double precision[]` (1-indexed) |
+| lambda / `MACRO` | `CREATE FUNCTION … LANGUAGE sql` (expression body) |
+| `arrayFold` ray-march | `WITH RECURSIVE` — all rays advance in lockstep |
+| `arrayFold` bounce loop | unrolled: one march pipeline per depth |
+| geometry list + `list_min` | rows (`VALUES`) + window `min` |
+| nested intersection expr | `LATERAL` "let" chains in the main query |
+
+The depth-2 scene therefore carries **six recursive ray-marches** in one query — terrain and
+tori, each for the primary ray and the shadow ray, across two bounces — plus the analytic
+letter cylinders, the i-dot sphere, and the planet. CedarDB's planner compiles and runs the
+whole thing without complaint.
+
+This is the crisp contrast with DuckDB. A recursive CTE is a **relation**: each step evaluates
+its body once per (ray, step) *row*, so the per-step body stays bounded and the number of
+marches in the query adds rows, not exponential expression size. DuckDB's `list_reduce` march
+is an **expression**, and nesting several of them multiplies the expression the planner must
+analyse — which is why two marches already time it out. Same algorithm, opposite outcome,
+because of how each engine represents the loop.
+
+**Correctness.** The CedarDB render matches the ClickHouse reference: per-channel sums agree to
+within 0.1 %, the mean per-channel difference is ≈ 1.0 / 255, and the two 192 × 90 images are
+visually indistinguishable. About 6 % of pixels differ by more than ±4; these are silhouette
+and shadow-boundary pixels — the inherent sub-pixel disagreement between two independent ray
+tracers evaluating the marches in different float order, with no anti-aliasing to hide it.
+
+**Speed.** At 192 × 90, depth 2, on the same machine:
+
+| engine | wall time |
+|---|---:|
+| ClickHouse (`arrayFold` + lambdas) | **54.4 s** |
+| CedarDB (recursive CTEs) | **4.3 s** |
+| DuckDB | cannot compile |
+
+CedarDB is ~12× faster here — but that gap is about *formulation*, not raw compute. The
+ClickHouse number is dominated by analysing its deeply-nested lambda tree (it barely changes
+with resolution); CedarDB's set-based recursive CTEs are an ordinary relational plan, so its
+time is execution, not analysis. A recursive-CTE *ClickHouse* query would likely close much of
+the gap. The honest takeaway is not "CedarDB beats ClickHouse at ray tracing" but "for this
+program, the recursive-CTE formulation that only CedarDB's planner could digest is also the
+one that isn't analysis-bound."
+
+**Two CedarDB engine bugs / quirks** surfaced (worth reporting upstream):
+  * subscripting an array produced by a `CASE`/`if` expression aborts the server
+    (`ArrayRuntime` assertion) — every array choice is an arithmetic `mix()` blend instead;
+  * `LATERAL` inside a *recursive* term also aborts — the marches inline their step
+    expressions rather than binding them with `LATERAL`;
+  * integer literals default to `int32` (the LCG hash needs explicit `bigint`), and the
+    intentional `LATERAL` "let" joins need `SET implicit_cross_products = ON`.
+
+### Postgres / MySQL — no SQL lambdas *and* no advanced recursive planner
+
+These dialects also lack lambdas, so a faithful port needs the same recursive-CTE
+reformulation of every loop — but without CedarDB's planner, a six-march query is a much
+riskier proposition, and MySQL additionally lacks arrays (vectors would have to be triples of
+columns or JSON). They remain the procedural / recursive-CTE frontier; CedarDB shows the
+recursive-CTE shape *can* work when the planner is strong enough.
 
 ## Conclusion
 
 The combined ClickHouse ray tracer is **portable as a faithful translation** (the math, the
-hash, the SDFs all reproduce correctly), but it is **not portable as a single SQL query** to
-engines whose planners expand higher-order calls instead of analysing bounded loops in place.
-On the engine most likely to succeed — DuckDB, the only other one with SQL lambdas — the
-planner is superlinear in the number of ray-marches and cannot compile more than one.
+hash, the SDFs all reproduce correctly), but whether it is portable *as a single SQL query*
+depends entirely on **how the engine's planner represents a bounded loop**:
 
-This makes the renderer an unusually sharp benchmark of **query-compiler architecture** rather
-than execution throughput: the question is not "how fast does each engine trace rays" but
-"can each engine's planner even compile a program with ~8 nested bounded loops in one query."
+- expand the loop into an **expression** (DuckDB's `list_reduce` macro) and several marches
+  multiply into a query the planner can't analyse — it cannot compile the scene at all;
+- analyse the loop as a **bounded operator** (ClickHouse's `arrayFold`) and it compiles, but
+  the cost is concentrated in analysing the deeply-nested lambda tree (~54 s, resolution-independent);
+- iterate the loop as a **relation** (CedarDB's `WITH RECURSIVE`) and the planner sees an
+  ordinary recursive join — it compiles *and* runs the six-march scene in ~4.3 s.
+
+So the renderer is an unusually sharp benchmark of **query-compiler architecture** rather than
+execution throughput. The same ~8 nested bounded loops are trivial, analysis-bound, or
+impossible depending only on whether the engine treats the loop as a relation, an operator, or
+an expression. Two of three engines tried can run it; the one that can't is the one that
+inlines the loop into an expression.
 
 ## Open follow-ups
 
-- **CedarDB via recursive CTE** — in progress. Advanced planner, Postgres-compatible;
-  reformulate the bounce loop and marches as recursive CTEs.
+- **Postgres / MySQL via recursive CTE** — the CedarDB shape ports in principle, but without
+  CedarDB's planner the six-march query is a risky bet (and MySQL lacks arrays — vectors become
+  column triples or JSON).
 - **A portable single-march scene** — a terrain-only variant (one `marchTerr`, no
   letters/tori/planet, no reflections) is within reach for every engine (DuckDB handles one
-  march in 6.7 s) and would yield real apples-to-apples execution numbers.
+  march in 6.7 s) and would yield apples-to-apples *execution* numbers across all of them.
 - **DuckDB separate-statement workaround** — split into ~20 `CREATE TABLE … AS` statements,
   ≤ 1 march each, to sidestep the planner blowup for the full scene.
 
@@ -161,6 +223,11 @@ python3 gen_clickhouse_bench.py 192 90 2 data > queries/clickhouse.sql
 clickhouse local --queries-file queries/clickhouse.sql > out/clickhouse.tsv
 python3 tools.py render out/clickhouse.tsv 192 90 out/clickhouse.png
 
-# Compare another engine's dump against the reference
-python3 tools.py compare out/clickhouse.tsv out/<engine>.tsv
+# CedarDB port (Postgres wire protocol)
+python3 gen_cedardb_bench.py 192 90 2 > queries/cedardb.sql
+psql -h 127.0.0.1 -p 5499 -U postgres -d raytracer -q -f queries/cedardb.sql > out/cedardb.tsv
+python3 tools.py render out/cedardb.tsv 192 90 out/cedardb_192.png
+
+# Compare an engine's dump against the reference
+python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
 ```

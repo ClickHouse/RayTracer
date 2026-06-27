@@ -10,6 +10,11 @@ It renders the word **ClickHouse** as glassy, chrome lettering — in the spirit
 Kensler's famous Pixar business-card ray tracer — and, in the scene above, sets it floating
 over a procedurally generated landscape, reflecting the terrain and casting shadows on the hills.
 
+See also:
+- [NoiSQL — Generating Music With SQL Queries](https://github.com/ClickHouse/NoiSQL)
+- [SQL Mandelbrot Benchmark](https://github.com/ClickHouse/sql-mandelbrot-benchmark)
+- [DOOMHouse is a "Doom-like" game engine that renders the 3D graphics entirely in ClickHouse SQL](https://github.com/arniwesth/DoomHouse)
+
 ## How it works
 
 The whole renderer lives in one query:
@@ -83,6 +88,11 @@ to re-create the hero image:
 python3 generators/gen_combined.py 2560 1200 8 2 > scene.sql
 clickhouse local --queries-file scene.sql > scene.png
 ```
+
+## Trying with other databases
+
+- 🐛 **CedarDB**: works, but with bugs: https://github.com/cedardb/issues/issues/71
+- ☠️ **DuckDB**: does not work, tried multiple ways - with arrays and recursive CTE, but it can't process even the smallest resolution image.
 
 ## Credits
 

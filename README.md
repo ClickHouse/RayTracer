@@ -89,6 +89,11 @@ python3 generators/gen_combined.py 2560 1200 8 2 > scene.sql
 clickhouse local --queries-file scene.sql > scene.png
 ```
 
+## Trying with other databases
+
+- **CedarDB**: works, but with bugs: https://github.com/cedardb/issues/issues/71
+- **DuckDB**: does not work, tried multiple ways - with arrays and recursive CTE, but it can't process even the smallest resolution image.
+
 ## Credits
 
 Inspired by Andrew Kensler's *business-card ray tracer* and Paul Heckbert's minimal ray

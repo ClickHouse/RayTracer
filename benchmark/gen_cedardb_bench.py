@@ -5,29 +5,58 @@ CedarDB has no SQL lambdas / higher-order array functions, so the port is
 *set-based* and *recursive-CTE* driven instead of expression-driven:
 
   ClickHouse tuple / DuckDB LIST  -> double precision[]  (1-indexed)
-  WITH-lambda / CREATE MACRO      -> CREATE FUNCTION ... LANGUAGE sql (expr body)
+  leaf vector / scalar helpers    -> CREATE FUNCTION ... LANGUAGE sql (expr body)
+  intersection math               -> LATERAL chains in the main query
+                                     (CedarDB has no subqueries *inside* function
+                                      bodies, but LATERAL works in the main query)
   arrayFold ray-march             -> WITH RECURSIVE (all rays march in lockstep)
-  geometry list                   -> rows (VALUES), nearest hit via aggregation
+  geometry list                   -> rows (VALUES); nearest hit via window min
   cityHash/intHash                -> the same portable LCG hash (pure arithmetic)
 
-Crucially the marches are *relations*, not nested expressions: each recursive
-step evaluates its body once per (ray, step) row, so the body stays bounded and
-the planner never sees the exponential expression blow-up that defeats DuckDB.
+Two CedarDB engine quirks shape the port:
+  * subscripting an array produced by CASE/if aborts the server, so every
+    array choice is an arithmetic mix() blend on a 0/1 scalar selector;
+  * LATERAL in a *recursive* term also aborts, so the marches inline their
+    per-step expressions.
+A zero-safe vn() keeps masked-out candidate normals finite (mix(a,b,0) would
+otherwise turn an inf normal into NaN).
 
-Built up in phases; this file currently emits PHASE 1: core functions + a
-recursive-CTE terrain march + primary-ray-only render (no letters / tori /
-shadows / bounces yet), so we can validate that CedarDB compiles and runs the
-recursive march and produces a sensible terrain image.
+Phases (built up incrementally):
+  1  core functions + recursive terrain march + primary-ray terrain render
+  2  + analytic letters (cylinders/sphere) + tori march + planet  (first hit)   <-- this file
+  3  + shadow marches + reflection bounces, full correctness match
 
 Usage:  gen_cedardb_bench.py [W] [H]   (default 48 24)
 """
 import sys, math
+import primfont2
 
 W = int(sys.argv[1]) if len(sys.argv) > 1 else 48
 H = int(sys.argv[2]) if len(sys.argv) > 2 else 24
 
 def f(v): return repr(round(float(v), 8))
-def A(*xs): return "ARRAY[" + ",".join(f(x) for x in xs) + "]::double precision[]"
+def arr(xs): return "ARRAY[" + ",".join(f(x) for x in xs) + "]::double precision[]"
+
+# ---- geometry (world space), reused from the ClickHouse/DuckDB generators ----
+S, Z0 = 1.0, 2.5
+X0 = 24.0 - primfont2.TOTAL_W * S / 2.0
+cyls, sph, tori = [], [], []
+for p in primfont2.PRIMS:
+    if p[0] == 'cyl':
+        _, x0, z0, x1, z1, r = p
+        cyls.append((x0*S+X0, 0.0, z0*S+Z0, x1*S+X0, 0.0, z1*S+Z0, r*S))
+    elif p[0] == 'sphere':
+        _, cx, cz, r = p
+        sph.append((cx*S+X0, 0.0, cz*S+Z0, r*S))
+    elif p[0] == 'torus':
+        _, cx, cz, Ro, Ri, cut = p
+        R, rr = (Ro+Ri)/2.0, (Ro-Ri)/2.0
+        if cut is None:
+            bc, bh = (1e6, 0.0, 1e6), (0.1, 0.1, 0.1)
+        else:
+            bc = ((cut[0]+cut[2])/2.0*S+X0, 0.0, (cut[1]+cut[3])/2.0*S+Z0)
+            bh = (abs(cut[2]-cut[0])/2.0*S, 100.0, abs(cut[3]-cut[1])/2.0*S)
+        tori.append((cx*S+X0, cz*S+Z0, R*S, rr*S, bc[0], bc[1], bc[2], bh[0], bh[1], bh[2]))
 
 # ---- camera basis (constant; eye/target fixed) ----
 def sub(a, b): return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
@@ -42,9 +71,31 @@ UP     = cross(RIGHT, FWD)
 TANH   = math.tan(36.0 * 0.5 * math.pi / 180.0)
 ASPECT = W / H
 
+# ---- toriSDF inlined over the 7 tori (least of greatest(tsdf, -bsdf)) ----
+def tori_terms():
+    terms = []
+    for (cx, cz, R, rr, bcx, bcy, bcz, bhx, bhy, bhz) in tori:
+        t = f"tsdf3(px,py,pz,{f(cx)},{f(cz)},{f(R)},{f(rr)})"
+        b = f"bsdf3(px,py,pz,{f(bcx)},{f(bcy)},{f(bcz)},{f(bhx)},{f(bhy)},{f(bhz)})"
+        terms.append(f"greatest({t}, -{b})")
+    expr = terms[-1]
+    for t in reversed(terms[:-1]):
+        expr = f"least({t}, {expr})"
+    return expr
+
+# ---- cylinder VALUES rows ----
+def cyl_values():
+    rows = []
+    for (ax, ay, az, bx, by, bz, r) in cyls:
+        rows.append(f"({arr([ax,ay,az])}, {arr([bx,by,bz])}, {f(r)}::double precision)")
+    return ",\n     ".join(rows)
+
+SPHc = sph[0]  # single i-dot sphere
+
 SCRIPT = f"""\
 -- ====================================================================
--- ClickHouse-over-terrain benchmark, CedarDB port (PHASE 1: terrain only)
+-- ClickHouse-over-terrain benchmark, CedarDB port (PHASE 2: first hit)
+--   terrain + analytic letters (cylinders/sphere) + tori march + planet
 -- ====================================================================
 
 -- ---- vector helpers (double precision[3], 1-indexed) ----
@@ -53,7 +104,8 @@ CREATE OR REPLACE FUNCTION vs(a double precision[], b double precision[]) RETURN
 CREATE OR REPLACE FUNCTION vm(a double precision[], s double precision) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]*s,a[2]*s,a[3]*s]';
 CREATE OR REPLACE FUNCTION vd(a double precision[], b double precision[]) RETURNS double precision LANGUAGE sql AS 'a[1]*b[1]+a[2]*b[2]+a[3]*b[3]';
 CREATE OR REPLACE FUNCTION vmul(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]*b[1],a[2]*b[2],a[3]*b[3]]';
-CREATE OR REPLACE FUNCTION vn(a double precision[]) RETURNS double precision[] LANGUAGE sql AS 'vm(a, 1.0/sqrt(vd(a,a)))';
+-- zero-safe normalize: a zero vector maps to zero, never inf/NaN
+CREATE OR REPLACE FUNCTION vn(a double precision[]) RETURNS double precision[] LANGUAGE sql AS 'vm(a, 1.0/sqrt(greatest(vd(a,a), 1e-18)))';
 CREATE OR REPLACE FUNCTION vref(d double precision[], n double precision[]) RETURNS double precision[] LANGUAGE sql AS 'vs(d, vm(n, 2.0*vd(d,n)))';
 CREATE OR REPLACE FUNCTION mix(a double precision[], b double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'va(a, vm(vs(b,a), t))';
 CREATE OR REPLACE FUNCTION lerpS(a double precision, b double precision, t double precision) RETURNS double precision LANGUAGE sql AS 'a*(1.0-t)+b*t';
@@ -83,43 +135,56 @@ CREATE OR REPLACE FUNCTION terrCol(h double precision) RETURNS double precision[
 CREATE OR REPLACE FUNCTION sky(d double precision[]) RETURNS double precision[] LANGUAGE sql AS
   'mix(ARRAY[0.66,0.78,0.96]::double precision[], ARRAY[0.30,0.50,0.85]::double precision[], greatest(0.0, least(1.0, d[3]*1.5)))';
 
+-- ---- torus / box signed-distance fields (scalar args; no array subscripts) ----
+CREATE OR REPLACE FUNCTION tsdf3(px double precision, py double precision, pz double precision,
+                                 cx double precision, cz double precision, R double precision, rr double precision)
+  RETURNS double precision LANGUAGE sql AS
+  'sqrt((sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R)*(sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R) + py*py) - rr';
+CREATE OR REPLACE FUNCTION bsdf3(px double precision, py double precision, pz double precision,
+                                 cx double precision, cy double precision, cz double precision,
+                                 hx double precision, hy double precision, hz double precision)
+  RETURNS double precision LANGUAGE sql AS
+  'sqrt(greatest(abs(px-cx)-hx,0.0)*greatest(abs(px-cx)-hx,0.0)
+       + greatest(abs(py-cy)-hy,0.0)*greatest(abs(py-cy)-hy,0.0)
+       + greatest(abs(pz-cz)-hz,0.0)*greatest(abs(pz-cz)-hz,0.0))
+   + least(greatest(abs(px-cx)-hx, greatest(abs(py-cy)-hy, abs(pz-cz)-hz)), 0.0)';
+-- nearest-surface distance over all 7 tori (each cut by its box)
+CREATE OR REPLACE FUNCTION toriSDF3(px double precision, py double precision, pz double precision)
+  RETURNS double precision LANGUAGE sql AS
+  '{tori_terms()}';
+
 -- ====================================================================
 --  render
 -- ====================================================================
+-- the LATERAL "let" chains are intentional correlated joins, not accidental
+-- cross products; allow them past CedarDB's implicit-cross-product guard.
+SET implicit_cross_products = ON;
 COPY (
 WITH RECURSIVE
 -- primary rays: one row per pixel
 px AS (
   SELECT g AS idx,
-         {A(*EYE)} AS o,
-         vn(va({A(*FWD)},
-                va(vm({A(*RIGHT)}, (((g % {W}) + 0.5) / {f(W)} * 2.0 - 1.0) * {f(ASPECT)} * {f(TANH)}),
-                   vm({A(*UP)},    (1.0 - ((g / {W})::int + 0.5) / {f(H)} * 2.0) * {f(TANH)})))) AS d
+         {arr(EYE)} AS o,
+         vn(va({arr(FWD)},
+                va(vm({arr(RIGHT)}, (((g % {W}) + 0.5) / {f(W)} * 2.0 - 1.0) * {f(ASPECT)} * {f(TANH)}),
+                   vm({arr(UP)},    (1.0 - ((g / {W})::int + 0.5) / {f(H)} * 2.0) * {f(TANH)})))) AS d
   FROM generate_series(0, {W*H-1}) g
 ),
--- terrain height-field march; all rays advance in lockstep.
--- done: 0 = keep marching, 1 = hit (result=t), 2 = escaped above terrain.
--- (no LATERAL in the recursive term: CedarDB's array runtime asserts on it,
---  so the per-step expressions are inlined instead.)
+
+-- ---- terrain height-field march (lockstep; inlined, no LATERAL in recursion) ----
 m AS (
   SELECT idx, o, d,
          CASE WHEN d[3] < -0.001 THEN greatest(0.05, (o[3]-1.55)/(-d[3])) ELSE 0.05 END AS t,
-         0.0::double precision AS prevT,
-         1e9::double precision  AS prevDiff,
-         1e9::double precision  AS result,
-         0 AS done, 0 AS iter
+         0.0::double precision AS prevT, 1e9::double precision AS prevDiff,
+         1e9::double precision AS result, 0 AS done, 0 AS iter
   FROM px
   UNION ALL
   SELECT idx, o, d,
-    CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN t ELSE t + greatest(0.06, t*0.035) END AS t,
-    t AS prevT,
-    dc AS prevDiff,
-    CASE WHEN prevDiff > 0.0 AND dc <= 0.0
-              THEN prevT + (t - prevT) * prevDiff / (prevDiff - dc)
-         ELSE 1e9 END AS result,
+    CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN t ELSE t + greatest(0.06, t*0.035) END,
+    t, dc,
+    CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN prevT + (t - prevT)*prevDiff/(prevDiff - dc) ELSE 1e9 END,
     CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN 1
-         WHEN o[3] + t*d[3] > 1.55 AND d[3] >= 0.0 THEN 2
-         ELSE 0 END AS done,
+         WHEN o[3] + t*d[3] > 1.55 AND d[3] >= 0.0 THEN 2 ELSE 0 END,
     iter + 1
   FROM (
     SELECT idx, o, d, t, prevT, prevDiff, iter,
@@ -127,33 +192,153 @@ m AS (
     FROM m WHERE done = 0 AND iter < 110
   ) s
 ),
-terr AS (
-  SELECT idx, min(CASE WHEN done = 1 THEN result ELSE 1e9 END) AS tHit
-  FROM m GROUP BY idx
+terr AS (SELECT idx, min(CASE WHEN done = 1 THEN result ELSE 1e9 END) AS tTerr FROM m GROUP BY idx),
+
+-- ---- tori sphere-trace march (exactly 48 accumulate steps, like DuckDB) ----
+tmar AS (
+  SELECT idx, o, d, 0.02::double precision AS t, 0 AS iter FROM px
+  UNION ALL
+  SELECT idx, o, d, t + toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t), iter + 1
+  FROM tmar WHERE iter < 48
 ),
-hit AS (
-  -- t is capped only for the *terrain-shade* hit point: the mix() below always
-  -- evaluates the terrain branch (we can't CASE over arrays), and at the sky
-  -- sentinel t=1e9 the noise hash would overflow int64.  Real hits are <~1300,
-  -- far below the cap, so they are unaffected; sky pixels are masked out anyway.
-  SELECT p.idx, p.o, p.d, t.tHit,
-         va(p.o, vm(p.d, least(t.tHit, 5000.0))) AS hp
-  FROM px p JOIN terr t USING (idx)
+tori_hit AS (
+  SELECT idx, tfin, sdf,
+         CASE WHEN sdf < 0.01 AND tfin > 0.002 AND tfin < 260.0 THEN tfin ELSE 1e9 END AS tTorus
+  FROM (
+    SELECT t1.idx, t1.t AS tfin, t1.o, t1.d,
+           toriSDF3(t1.o[1]+t1.d[1]*t1.t, t1.o[2]+t1.d[2]*t1.t, t1.o[3]+t1.d[3]*t1.t) AS sdf
+    FROM tmar t1 WHERE t1.iter = 48
+  ) z
 ),
--- NB: CedarDB crashes when subscripting an array produced by CASE/if, so the
--- sky-vs-terrain choice is an arithmetic mix() blend on a 0/1 scalar selector,
--- never a CASE returning an array.
+-- tori normal at the hit point (numerical SDF gradient, zero-safe)
+tori_nrm AS (
+  SELECT h.idx, h.tTorus,
+         vn(ARRAY[
+            toriSDF3(hx+0.0009,hy,hz) - toriSDF3(hx-0.0009,hy,hz),
+            toriSDF3(hx,hy+0.0009,hz) - toriSDF3(hx,hy-0.0009,hz),
+            toriSDF3(hx,hy,hz+0.0009) - toriSDF3(hx,hy,hz-0.0009)]) AS nTorus
+  FROM tori_hit h JOIN px p USING (idx),
+       LATERAL (SELECT p.o[1]+p.d[1]*least(h.tTorus,5000.0) AS hx,
+                       p.o[2]+p.d[2]*least(h.tTorus,5000.0) AS hy,
+                       p.o[3]+p.d[3]*least(h.tTorus,5000.0) AS hz) g
+),
+
+-- ---- analytic cylinders (finite rod = body + 2 disk caps), nearest per pixel ----
+cyls(a, b, r) AS (VALUES
+     {cyl_values()}
+),
+cyl_raw AS (
+  SELECT p.idx,
+         least(tBody, least(tCapA, tCapB)) AS t,
+         -- normal: body | capA(-ba) | capB(ba) chosen by which sub-t is the min
+         mix(mix(vn(l1.ba), vn(vm(l1.ba,-1.0)),
+                 CASE WHEN least(tBody,least(tCapA,tCapB)) = tCapA THEN 1.0 ELSE 0.0 END),
+             vn(vs(va(p.o, vm(p.d, least(tBody,least(tCapA,tCapB)))),
+                   va(c.a, vm(l1.ba, vd(vs(va(p.o, vm(p.d, least(tBody,least(tCapA,tCapB)))), c.a), l1.ba)/l1.baba)))),
+             CASE WHEN least(tBody,least(tCapA,tCapB)) = tBody THEN 1.0 ELSE 0.0 END) AS n
+  FROM px p CROSS JOIN cyls c
+  , LATERAL (SELECT vs(c.b,c.a) AS ba, vs(p.o,c.a) AS oa) l0
+  , LATERAL (SELECT l0.ba AS ba, l0.oa AS oa, vd(l0.ba,l0.ba) AS baba, vd(l0.ba,p.d) AS bard,
+                    vd(l0.ba,l0.oa) AS baoa, vd(p.d,l0.oa) AS doa, vd(l0.oa,l0.oa) AS oaoa) l1
+  -- body quadratic
+  , LATERAL (SELECT l1.baba - l1.bard*l1.bard AS aa,
+                    l1.baba*l1.doa - l1.baoa*l1.bard AS bb,
+                    l1.baba*l1.oaoa - l1.baoa*l1.baoa - c.r*c.r*l1.baba AS cc) l2
+  , LATERAL (SELECT l2.bb*l2.bb - l2.aa*l2.cc AS hh) l3
+  , LATERAL (SELECT (-l2.bb - sqrt(greatest(l3.hh,0.0)))/l2.aa AS tb) l4
+  , LATERAL (SELECT CASE WHEN l3.hh >= 0.0 AND l2.aa > 1e-9 AND l4.tb > 0.002
+                              AND (l1.baoa + l4.tb*l1.bard) > 0.0
+                              AND (l1.baoa + l4.tb*l1.bard) < l1.baba
+                         THEN l4.tb ELSE 1e9 END AS tBody) l5
+  -- disk caps at A and B (axis = ba)
+  , LATERAL (SELECT vd(l1.ba, p.d) AS den) l6
+  , LATERAL (SELECT vd(l1.ba, vs(c.a, p.o))/CASE WHEN abs(l6.den) < 1e-12 THEN 1e-12 ELSE l6.den END AS taA,
+                    vd(l1.ba, vs(c.b, p.o))/CASE WHEN abs(l6.den) < 1e-12 THEN 1e-12 ELSE l6.den END AS taB) l7
+  , LATERAL (SELECT vs(va(p.o, vm(p.d, l7.taA)), c.a) AS dA, vs(va(p.o, vm(p.d, l7.taB)), c.b) AS dB) l8
+  , LATERAL (SELECT CASE WHEN abs(l6.den) > 1e-9 AND l7.taA > 0.002 AND vd(l8.dA,l8.dA) <= c.r*c.r THEN l7.taA ELSE 1e9 END AS tCapA,
+                    CASE WHEN abs(l6.den) > 1e-9 AND l7.taB > 0.002 AND vd(l8.dB,l8.dB) <= c.r*c.r THEN l7.taB ELSE 1e9 END AS tCapB) l9
+),
+cyl_hit AS (
+  SELECT idx, t AS tCyl, n AS nCyl FROM (
+    SELECT idx, t, n, row_number() OVER (PARTITION BY idx ORDER BY t) AS rn FROM cyl_raw
+  ) z WHERE rn = 1
+),
+
+-- ---- i-dot sphere ----
+sph_hit AS (
+  SELECT p.idx,
+         CASE WHEN disc > 0.0 AND tnear > 0.002 THEN tnear ELSE 1e9 END AS tSph,
+         vn(vs(va(p.o, vm(p.d, CASE WHEN disc > 0.0 AND tnear > 0.002 THEN tnear ELSE 1e9 END)),
+               {arr(SPHc[:3])})) AS nSph
+  FROM px p
+  , LATERAL (SELECT vs(p.o, {arr(SPHc[:3])}) AS oc) s0
+  , LATERAL (SELECT vd(s0.oc, p.d) AS bb, vd(s0.oc, s0.oc) - {f(SPHc[3]*SPHc[3])} AS cc) s1
+  , LATERAL (SELECT s1.bb*s1.bb - s1.cc AS disc) s2
+  , LATERAL (SELECT -s1.bb - sqrt(greatest(s2.disc,0.0)) AS tnear) s3
+),
+
+-- ---- planet: sphere csgA with a spherical cavity csgB ----
+planet AS (
+  SELECT p.idx,
+         least(cEnter, cCav) AS tC,
+         -- outward A normal if entering A, else inward B normal
+         mix(vn(vs({arr([24.0,6.6,17.0])}, va(p.o, vm(p.d, least(cEnter,cCav))))),
+             vn(vs(va(p.o, vm(p.d, least(cEnter,cCav))), {arr([24.0,12.0,17.5])})),
+             CASE WHEN cEnter <= cCav THEN 1.0 ELSE 0.0 END) AS nC
+  FROM px p
+  , LATERAL (SELECT vs(p.o, {arr([24.0,12.0,17.5])}) AS ocA, vs(p.o, {arr([24.0,6.6,17.0])}) AS ocB) q0
+  , LATERAL (SELECT vd(q0.ocA,p.d) AS bA, vd(q0.ocA,q0.ocA)-36.0 AS cA,
+                    vd(q0.ocB,p.d) AS bB, vd(q0.ocB,q0.ocB)-19.36 AS cB) q1
+  , LATERAL (SELECT q1.bA*q1.bA-q1.cA AS dA, q1.bB*q1.bB-q1.cB AS dB) q2
+  , LATERAL (SELECT CASE WHEN q2.dA > 0.0 THEN -q1.bA - sqrt(q2.dA) ELSE 1e9 END AS aNear,
+                    CASE WHEN q2.dA > 0.0 THEN -q1.bA + sqrt(q2.dA) ELSE -1e9 END AS aFar,
+                    CASE WHEN q2.dB > 0.0 THEN -q1.bB - sqrt(q2.dB) ELSE 1e9 END AS bNear,
+                    CASE WHEN q2.dB > 0.0 THEN -q1.bB + sqrt(q2.dB) ELSE -1e9 END AS bFar) q3
+  , LATERAL (SELECT CASE WHEN q3.aNear > 0.002 AND q3.aNear < 1e8
+                              AND NOT (q3.bNear <= q3.aNear AND q3.aNear <= q3.bFar)
+                         THEN q3.aNear ELSE 1e9 END AS cEnter,
+                    CASE WHEN q3.bNear < 1e8 AND q3.bFar > 0.002
+                              AND q3.aNear <= q3.bFar AND q3.bFar <= q3.aFar
+                         THEN q3.bFar ELSE 1e9 END AS cCav) q4
+),
+
+-- ---- combine: nearest hit, normal via mix-blends, then shade (first hit, no bounce) ----
+comb AS (
+  SELECT p.idx, p.o, p.d,
+         th.tTorus, tn.nTorus, ch.tCyl, ch.nCyl, sh.tSph, sh.nSph, pl.tC, pl.nC, tr.tTerr,
+         least(ch.tCyl, least(sh.tSph, th.tTorus)) AS tLet,
+         least(least(ch.tCyl, least(sh.tSph, th.tTorus)), pl.tC) AS tM,
+         least(least(least(ch.tCyl, least(sh.tSph, th.tTorus)), pl.tC), tr.tTerr) AS tHit
+  FROM px p
+  JOIN tori_hit th USING (idx)
+  JOIN tori_nrm tn USING (idx)
+  JOIN cyl_hit ch USING (idx)
+  JOIN sph_hit sh USING (idx)
+  JOIN planet  pl USING (idx)
+  JOIN terr    tr USING (idx)
+),
+nrm AS (
+  SELECT c.*,
+         va(o, vm(d, least(tHit, 5000.0))) AS hp,
+         CASE WHEN tM < tTerr  AND tM < 1e8   THEN 1.0 ELSE 0.0 END AS isMirror,
+         CASE WHEN tTerr <= tM AND tTerr < 1e8 THEN 1.0 ELSE 0.0 END AS isTerr,
+         CASE WHEN tM >= 1e8   AND tTerr >= 1e8 THEN 1.0 ELSE 0.0 END AS isMiss,
+         -- surface normal of the nearest reflective primitive
+         mix(mix(mix(nSph, nCyl, CASE WHEN tCyl <= tSph THEN 1.0 ELSE 0.0 END),
+                 nTorus, CASE WHEN tTorus <= tCyl AND tTorus <= tSph THEN 1.0 ELSE 0.0 END),
+             nC, CASE WHEN tC < tLet THEN 1.0 ELSE 0.0 END) AS sn
+  FROM comb c
+),
 shade AS (
   SELECT idx,
-    mix(satb(vmul(terrCol(hp[3]),
-                  va(vm(ARRAY[0.45,0.56,0.80]::double precision[],
-                         0.26 + 0.18*greatest((terrN(hp[1], hp[2]))[3], 0.0)),
-                     vm(ARRAY[1.06,0.97,0.82]::double precision[],
-                         1.45*greatest(vd(vn(vs(ARRAY[9.0,-30.0,52.0]::double precision[], hp)),
-                                          terrN(hp[1], hp[2])), 0.0))))),
-        sky(d),
-        CASE WHEN tHit > 1e8 THEN 1.0 ELSE 0.0 END) AS col
-  FROM hit
+    va(va(
+       vm(satb(vmul(terrCol(hp[3]),
+                    va(vm(ARRAY[0.45,0.56,0.80]::double precision[], 0.26 + 0.18*greatest((terrN(hp[1],hp[2]))[3],0.0)),
+                       vm(ARRAY[1.06,0.97,0.82]::double precision[],
+                          1.45*greatest(vd(vn(vs(ARRAY[9.0,-30.0,52.0]::double precision[], hp)), terrN(hp[1],hp[2])),0.0))))), isTerr),
+       vm(sky(vref(d, sn)), isMirror)),
+       vm(sky(d), isMiss)) AS col
+  FROM nrm
 )
 SELECT idx,
   round(clampS(0.0,1.0, power(greatest(col[1],0.0)*1.15, 1.0/2.2))*255)::int AS r,

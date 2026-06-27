@@ -91,8 +91,8 @@ clickhouse local --queries-file scene.sql > scene.png
 
 ## Trying with other databases
 
-- **CedarDB**: works, but with bugs: https://github.com/cedardb/issues/issues/71
-- **DuckDB**: does not work, tried multiple ways - with arrays and recursive CTE, but it can't process even the smallest resolution image.
+- 🐛 **CedarDB**: works, but with bugs: https://github.com/cedardb/issues/issues/71
+- ☠️ **DuckDB**: does not work, tried multiple ways - with arrays and recursive CTE, but it can't process even the smallest resolution image.
 
 ## Credits
 

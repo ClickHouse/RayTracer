@@ -54,7 +54,14 @@ python3 tools.py render out/cedardb.tsv 192 90 out/cedardb_192.png
 python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
 ```
 
-## The reference image (192 × 90)
+## The image
+
+Full resolution (2560 × 1200), rendered by **CedarDB** — visually identical to the ClickHouse
+reference:
+
+![full](out/cedardb_full.png)
+
+The benchmark itself runs at 192 × 90 by default (small, so all engines have a chance):
 
 ![reference](out/clickhouse_192.png)
 
@@ -68,18 +75,26 @@ python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
 | **MySQL** | no arrays/lambdas → recursive CTE / stored routines | not started (procedural) |
 
-### Timing (192 × 90, depth 2, same machine)
+### Timing (depth 2, same machine)
 
-| Engine | Wall time | Notes |
-|---|---:|---|
-| ClickHouse | **54.4 s** | dominated by analysis of the nested lambda tree, not pixel compute |
-| CedarDB | **4.3 s** | set-based recursive CTEs; the planner is not analysis-bound here |
-| DuckDB | — | cannot compile the scene at all |
+| Engine | 192 × 90 (17 k px) | 2560 × 1200 (3.07 M px) |
+|---|---:|---:|
+| ClickHouse | 54.4 s | **11 min 38 s** (698 s) |
+| CedarDB | 4.3 s | **9 min 40 s** (580 s) |
+| DuckDB | cannot compile | cannot compile |
 
-Same scene, same image (mean per-channel difference ≈ 1.0 / 255 vs the ClickHouse
-reference; the two renders are visually identical). The ~12× gap is *formulation*,
-not raw engine power: ClickHouse's idiomatic `arrayFold`/lambda query spends its
-time in query analysis, while CedarDB's idiomatic recursive-CTE port does not.
+Same scene, same image at both sizes (mean per-channel difference ≈ 1.0 / 255 vs the
+ClickHouse reference; the renders are visually identical — see `out/clickhouse_full.png` and
+`out/cedardb_full.png`).
+
+The two resolutions tell different halves of the story. At **192 × 90** the gap is ~12×, but
+that is almost entirely ClickHouse's *fixed* cost of analysing its deeply-nested lambda tree
+(~50 s regardless of resolution) — it is not ray-tracing throughput. At **2560 × 1200** both
+engines are dominated by per-pixel compute (3.07 M pixels), the fixed analysis cost washes
+out, and the gap collapses to **~1.2×**: ≈ 211 µs/pixel for ClickHouse (after subtracting the
+~50 s analysis) vs ≈ 189 µs/pixel for CedarDB. So on raw throughput the two are close;
+CedarDB's headline advantage is that it both *compiles* the scene DuckDB can't and isn't
+saddled with a large fixed analysis cost.
 
 ### Findings
 

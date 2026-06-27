@@ -153,21 +153,25 @@ visually indistinguishable. About 6 % of pixels differ by more than ±4; these a
 and shadow-boundary pixels — the inherent sub-pixel disagreement between two independent ray
 tracers evaluating the marches in different float order, with no anti-aliasing to hide it.
 
-**Speed.** At 192 × 90, depth 2, on the same machine:
+**Speed.** Depth 2, on the same machine, at two resolutions:
 
-| engine | wall time |
-|---|---:|
-| ClickHouse (`arrayFold` + lambdas) | **54.4 s** |
-| CedarDB (recursive CTEs) | **4.3 s** |
-| DuckDB | cannot compile |
+| engine | 192 × 90 (17 k px) | 2560 × 1200 (3.07 M px) | ~µs / pixel at full res |
+|---|---:|---:|---:|
+| ClickHouse (`arrayFold` + lambdas) | 54.4 s | **698 s** (11 m 38 s) | ≈ 211 (after ~50 s analysis) |
+| CedarDB (recursive CTEs) | 4.3 s | **580 s** (9 m 40 s) | ≈ 189 |
+| DuckDB | cannot compile | cannot compile | — |
 
-CedarDB is ~12× faster here — but that gap is about *formulation*, not raw compute. The
-ClickHouse number is dominated by analysing its deeply-nested lambda tree (it barely changes
-with resolution); CedarDB's set-based recursive CTEs are an ordinary relational plan, so its
-time is execution, not analysis. A recursive-CTE *ClickHouse* query would likely close much of
-the gap. The honest takeaway is not "CedarDB beats ClickHouse at ray tracing" but "for this
-program, the recursive-CTE formulation that only CedarDB's planner could digest is also the
-one that isn't analysis-bound."
+The two resolutions measure different things. At **192 × 90** CedarDB looks ~12× faster, but
+that gap is almost all ClickHouse's *fixed* lambda-tree analysis cost (~50 s, essentially
+resolution-independent) — not ray-tracing throughput. At **2560 × 1200** the work is
+3.07 M pixels of actual compute, the fixed cost washes out, and the gap collapses to **~1.2×**
+(≈ 211 µs/pixel for ClickHouse after subtracting analysis, vs ≈ 189 µs/pixel for CedarDB).
+
+So the honest takeaway is *not* "CedarDB beats ClickHouse at ray tracing" — on raw per-pixel
+throughput they are close. It is: (1) CedarDB *compiles* the scene that DuckDB cannot, and
+(2) its recursive-CTE formulation carries no large fixed analysis cost, so it wins decisively
+at small sizes and modestly at large ones. A recursive-CTE *ClickHouse* query would likely
+close most of the remaining gap.
 
 **One genuine CedarDB engine bug** surfaced, reported upstream as
 [cedardb/issues#71](https://github.com/cedardb/issues/issues/71):

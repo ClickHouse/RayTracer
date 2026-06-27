@@ -53,7 +53,7 @@ python3 tools.py compare out/clickhouse.tsv out/duckdb.tsv
 | Engine | Port approach | Status |
 |---|---|---|
 | **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference, ~55 s |
-| **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` + `LIST`/`STRUCT` | ⚠ pieces work, full query won't compile (see below) |
+| **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ pieces work, but the planner can't compile a multi-march query (see below) |
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
 | **CedarDB** | Postgres-compatible, same constraint | not started (procedural) |
 | **MySQL** | no arrays/lambdas → recursive CTE / stored routines | not started (procedural) |
@@ -76,9 +76,27 @@ macros are call-by-name, and even with the marched point bound via a one-element
 binder/optimizer. (ClickHouse's analyzer *does* compile the equivalent monolith, in ~50 s —
 that contrast is itself a result.)
 
-To make DuckDB run, the per-bounce computation has to be **flattened into query stages**
-(a recursive CTE whose columns hold the intermediates, instead of one nested-`list_transform`
-expression). That re-architecture is the natural next step.
+I then re-architected it: each bounce as a `MATERIALIZED` CTE, the per-bounce step as a flat
+SELECT using DuckDB's by-value **lateral column aliasing** (verified: an alias referenced 4×
+binds once). Memory no longer blows up (~1 GB, not 14 GB) — but it still doesn't **plan**:
+
+| what | time |
+|---|---|
+| one `marchTerr` (a single ray-march, scalar) | ~6.7 s |
+| `marchTerr` **+** `marchTorus` in one query | **> 150 s (timeout)** |
+| `EXPLAIN` of a single bounce (planning only, no execution) | **> 280 s (timeout)** |
+
+So DuckDB's optimizer is **superlinear — effectively exponential — in the number of
+macro-expanded `list_reduce` marches in a single query**. One march is fine; two already blow
+up. The combined scene needs ~4 marches per bounce (terrain, tori, the shadow's terrain and
+tori marches) × 2 bounces ≈ 8 marches, which DuckDB cannot plan in any formulation tried
+(monolith, staged-flat, per-march CTEs all plan the whole query together).
+
+**Bottom line:** ClickHouse's analyzer compiles this whole renderer (~50 s) and runs it;
+DuckDB's planner cannot compile it at all once more than one ray-march is involved. That is
+the headline cross-engine result so far. The only remaining DuckDB avenue is to split the
+renderer into ~20 *separate* `CREATE TABLE … AS` statements (≤ 1 march each, materialised to
+real tables between them) — possible, but non-idiomatic and with unknown execution speed.
 
 **3. Postgres / CedarDB / MySQL have no lambdas or higher-order array functions in SQL at
 all**, so even the inner marches (`list_reduce` over the ray) can't be written as expressions.

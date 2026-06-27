@@ -90,13 +90,53 @@ _BIND = [
     ("fog",      "least(1.0, greatest(0.0, (tHit - fogStart()) / fogRange()))"),
     ("terrShade","va(vm(satb(vmul(terrCol(hp[3]), va(vm(skyAmb(), 0.26 + 0.18*greatest(tN[3],0.0)), vm(sunCol(), 1.45*lambert)))), 1.0 - fog), vm(hazeColor(), fog))"),
 ]
-_BODY = ("struct_pack(o := if(isMirror, shOrig, o), d := if(isMirror, rdir, d),"
-         " thr := if(isMirror, thr * reflect_k(), thr),"
-         " acc := va(acc, va(if(isMirror, vm(specColor(), thr * spec), [0.0,0.0,0.0]),"
-         "                    va(if(isTerr, vm(terrShade, thr), [0.0,0.0,0.0]),"
-         "                       if(isMiss, vm(sky(d), thr), [0.0,0.0,0.0])))),"
-         " alive := if(isMirror, 1.0, 0.0))")
-ONE_BOUNCE = dlets(_BIND, _BODY)
+# DuckDB cannot bind the per-bounce step as one nested expression, but its lateral
+# column aliasing is by-value (an alias is computed once), so the whole _BIND can be
+# a flat SELECT. Each bounce is a MATERIALIZED CTE so values flow as columns (no
+# re-expansion across bounces); alive rays bounce, dead rays pass through unchanged.
+_COLS = _BIND[4:]   # drop o,d,thr,acc (they are table columns now, not s.* aliases)
+BIND_SQL = ",\n        ".join(f"{e} AS {n}" for n, e in _COLS)
+NEWSTATE = """if(isMirror, shOrig, o) AS o2,
+        if(isMirror, rdir, d) AS d2,
+        if(isMirror, thr * reflect_k(), thr) AS thr2,
+        va(acc, va(if(isMirror, vm(specColor(), thr * spec), [0.0,0.0,0.0]),
+                   va(if(isTerr, vm(terrShade, thr), [0.0,0.0,0.0]),
+                      if(isMiss, vm(sky(d), thr), [0.0,0.0,0.0])))) AS acc2,
+        if(isMirror, 1.0, 0.0) AS alive2"""
+
+def bounce_cte(n):
+    return f"""b{n} AS MATERIALIZED (
+  SELECT idx, o2 AS o, d2 AS d, thr2 AS thr, acc2 AS acc, alive2 AS alive FROM (
+    SELECT idx, o, d, thr, acc, alive,
+        {BIND_SQL},
+        {NEWSTATE}
+    FROM b{n-1} WHERE alive > 0.5
+  )
+  UNION ALL
+  SELECT idx, o, d, thr, acc, alive FROM b{n-1} WHERE alive <= 0.5
+)"""
+
+B0 = f"""b0 AS MATERIALIZED (
+  SELECT idx,
+    eye() AS o,
+    vn(va(camFwd(), va(vm(camRight(), (((idx % {W}) + 0.5) / imgW() * 2.0 - 1.0) * aspect() * tanHalf()),
+                       vm(camUp(),    (1.0 - (idx // {W} + 0.5) / imgH() * 2.0) * tanHalf())))) AS d,
+    1.0 AS thr, [0.0,0.0,0.0]::DOUBLE[] AS acc, 1.0 AS alive
+  FROM (SELECT range AS idx FROM range({W}*{H}))
+)"""
+
+CTES = ",\n".join([B0] + [bounce_cte(n) for n in range(1, DEPTH + 1)])
+
+FINAL = f"""COPY (
+  WITH
+{CTES}
+  SELECT idx,
+    CAST(round(clamp3(0.0,1.0, pow(greatest(col[1],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS r,
+    CAST(round(clamp3(0.0,1.0, pow(greatest(col[2],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS g,
+    CAST(round(clamp3(0.0,1.0, pow(greatest(col[3],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS b
+  FROM (SELECT idx, va(acc, if(alive > 0.5, vm(sky(d), thr), [0.0,0.0,0.0])) AS col FROM b{DEPTH})
+  ORDER BY idx
+) TO '/dev/stdout' (FORMAT csv, DELIMITER E'\\t', HEADER false);"""
 
 SCRIPT = f"""SET lambda_syntax='ENABLE_SINGLE_ARROW';
 
@@ -248,29 +288,6 @@ CREATE OR REPLACE MACRO terrShadow(P,dir,maxd) AS
   len(list_filter(range(terrShadowSteps()),
         i -> ((0.3 + i*0.6) < maxd) AND (P[3] + (0.3+i*0.6)*dir[3] < terrH(P[1] + (0.3+i*0.6)*dir[1], P[2] + (0.3+i*0.6)*dir[2])))) > 0;
 
-CREATE OR REPLACE MACRO oneBounce(s) AS {ONE_BOUNCE};
-
-COPY (
-  SELECT idx,
-    CAST(round(clamp3(0.0,1.0, pow(greatest(col[1],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS r,
-    CAST(round(clamp3(0.0,1.0, pow(greatest(col[2],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS g,
-    CAST(round(clamp3(0.0,1.0, pow(greatest(col[3],0.0)*exposure(), 1.0/gamma_()))*255) AS INTEGER) AS b
-  FROM (
-    SELECT idx, va(st.acc, if(st.alive > 0.5, vm(sky(st.d), st.thr), [0.0,0.0,0.0])) AS col
-    FROM (
-      SELECT idx, list_reduce(list_transform(range(maxDepth()+1), j -> st0), (s,jj) -> if(s.alive > 0.5, oneBounce(s), s)) AS st
-      FROM (
-        SELECT idx,
-          struct_pack(
-            o := eye(),
-            d := vn(va(camFwd(), va(vm(camRight(), (((idx % {W}) + 0.5) / imgW() * 2.0 - 1.0) * aspect() * tanHalf()),
-                                    vm(camUp(),    (1.0 - (idx // {W} + 0.5) / imgH() * 2.0) * tanHalf())))),
-            thr := 1.0, acc := [0.0,0.0,0.0], alive := 1.0) AS st0
-        FROM (SELECT range AS idx FROM range({W}*{H}))
-      )
-    )
-  )
-  ORDER BY idx
-) TO '/dev/stdout' (FORMAT csv, DELIMITER E'\t', HEADER false);
+{FINAL}
 """
 sys.stdout.write(SCRIPT)

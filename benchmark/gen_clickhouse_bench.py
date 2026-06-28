@@ -345,14 +345,19 @@ STT = "Tuple(Tuple(Float64,Float64,Float64), Tuple(Float64,Float64,Float64), Flo
 def Rexpr(ch):
     return f"clamp(pow(greatest(col.{ch}, 0.0) * exposure, 1.0 / gamma), 0.0, 1.0)"
 
+# optimize_and_compare_chain=0: this scene's many AND-chains of comparisons over large
+# (let-expanded) operands make ClickHouse's LogicalExpressionOptimizerPass hash huge
+# subtrees in query analysis (~50s, resolution-independent) while folding nothing. Turning
+# it off makes the analysis ~30x faster and leaves the image identical.
+_OPT = "optimize_and_compare_chain = 0, max_block_size = 2048, max_threads = 24"
 if OUTPUT == 'png':
     PROJECT = f"{Rexpr(1)} AS r, {Rexpr(2)} AS g, {Rexpr(3)} AS b"
     SUFFIX  = (f"SETTINGS output_format_image_width = {W}, output_format_image_height = {H}, "
-               f"max_block_size = 2048, max_threads = 24\nFORMAT PNG")
+               f"{_OPT}\nFORMAT PNG")
 else:   # one row per pixel: idx, R, G, B as 0..255 ints (scanline order) for cross-engine diff
     PROJECT = (f"pixel AS idx, toUInt8(round({Rexpr(1)} * 255)) AS r, "
                f"toUInt8(round({Rexpr(2)} * 255)) AS g, toUInt8(round({Rexpr(3)} * 255)) AS b")
-    SUFFIX  = "SETTINGS max_block_size = 2048, max_threads = 24\nFORMAT TSV"
+    SUFFIX  = f"SETTINGS {_OPT}\nFORMAT TSV"
 
 QUERY = PRELUDE + f"""
 SELECT {PROJECT}

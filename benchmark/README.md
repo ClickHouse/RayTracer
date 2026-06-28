@@ -65,7 +65,7 @@ reference:
 
 | Engine | Port approach | Status |
 |---|---|---|
-| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference; compiles & runs (analysis-bound) |
+| **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference; compiles & runs (uses `optimize_and_compare_chain = 0`, see finding 1) |
 | **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference; compiles & runs (see below) |
 | **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ planner can't compile a multi-march query — fails at *any* size, including 192 × 90 (see below) |
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
@@ -75,32 +75,39 @@ reference:
 
 | Engine | Wall time | ~µs / pixel |
 |---|---:|---:|
-| ClickHouse | **11 min 48 s** (708 s) | ≈ 214 (after ~50 s fixed analysis) |
+| ClickHouse | **10 min 55 s** (655 s) | ≈ 213 |
 | CedarDB | **9 min 40 s** (580 s) | ≈ 189 |
 | DuckDB | **does not compile** — fails at any size, even 192 × 90 | — |
 
 Same scene, same image (mean per-channel difference ≈ 1.0 / 255 vs the ClickHouse reference;
 the renders are visually identical — see `out/clickhouse_full.png` and `out/cedardb_full.png`).
 
-On raw per-pixel throughput ClickHouse and CedarDB are close (≈ 214 vs ≈ 189 µs/pixel).
-CedarDB's advantage is structural: it both *compiles* the scene DuckDB can't and carries no
-large fixed analysis cost — ClickHouse spends a fixed ~50 s analysing its deeply-nested lambda
-tree before tracing any pixels (a small slice of 708 s at full resolution, but the dominant
-cost at small sizes). DuckDB never enters the comparison: its planner cannot compile a query
-with more than one ray-march at *any* resolution — the 192 × 90 query fails exactly as the
-full-resolution one does.
+The ClickHouse query runs with `SETTINGS optimize_and_compare_chain = 0` (finding 1). With the
+default (that setting on) the same render takes **12 min 34 s** (754 s) — the setting saves
+~99 s here and ~30× at analysis-dominated small sizes, with a byte-identical image.
+
+On raw per-pixel throughput ClickHouse and CedarDB are now close (≈ 213 vs ≈ 189 µs/pixel).
+DuckDB never enters the comparison: its planner cannot compile a query with more than one
+ray-march at *any* resolution — the 192 × 90 query fails exactly as the full-resolution one
+does.
 
 ### Findings
 
 > A full, self-contained write-up of the cross-engine portability study is in
 > [`FINDINGS.md`](FINDINGS.md). The summary below is the short version.
 
-**1. ClickHouse pays a large *fixed* query-analysis cost before tracing any pixels.** The
-renderer is a deeply nested tree of ~30 lambdas, and expanding/analysing it takes ~50 s
-essentially regardless of resolution (a 16 × 16 render still takes ~50 s). At full resolution
-that is only ~7 % of the 708 s — per-pixel compute dominates — but at small sizes it dominates
-entirely, which is why ClickHouse's true per-pixel throughput (≈ 214 µs/pixel) is best read
-after subtracting the fixed analysis cost.
+**1. ClickHouse's analysis cost was almost entirely one default-on optimizer pass —
+`optimize_and_compare_chain`.** Profiling showed ~80 % of query *analysis* in
+`IQueryTreeNode::getTreeHash` (an uncached, whole-subtree walk). It is driven by
+`LogicalExpressionOptimizerPass::tryOptimizeAndCompareChain`, which inserts every `AND`-chain
+comparison's operands into hash maps keyed by their full tree hash. This scene has many `AND`
+validity checks (`hh>=0 AND aa>1e-9 AND t>eps AND y>0 AND y<baba`) whose operands are huge
+let-expanded subtrees, so the pass hashes a large fraction of the (exponentially expanded)
+tree — and folds nothing. Disabling it (`SET optimize_and_compare_chain = 0`) cuts a 16 × 16
+render from **~72 s to ~2.3 s (~30×)** with an identical image, and saves ~99 s at full
+resolution. The benchmark query sets it, so ClickHouse's time here is real ray-tracing
+throughput rather than a pathological analysis cost. (The underlying engine improvement — make
+that pass not hash huge operands — is a separate ClickHouse change.)
 
 **2. The DuckDB port works piece-by-piece but the *whole* renderer overwhelms DuckDB's
 planner.** `gen_duckdb_bench.py` faithfully translates the scene (tuples→`LIST`, lambdas→

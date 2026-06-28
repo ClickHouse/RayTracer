@@ -6,7 +6,9 @@ shrunk to a small deterministic benchmark — on engines other than ClickHouse.
 
 > **TL;DR.** The renderer is a single SQL query built from ~30 nested lambdas and 4
 > `arrayFold` loops, several of which are *ray-marches* (iterating a signed-distance field
-> along the ray). **ClickHouse** compiles and runs it (analysis-bound, ~54 s at 192 × 90).
+> along the ray). **ClickHouse** compiles and runs it; its out-of-box analysis cost was almost
+> entirely one default-on optimizer pass (`optimize_and_compare_chain`), removable with a
+> setting (~30× faster analysis, identical image).
 > **DuckDB** — the only other engine here with SQL lambdas — translates faithfully but its
 > **planner cannot compile a query with more than one ray-march** (superlinear, effectively
 > exponential, in the number of marches). **CedarDB** has no lambdas, so it is re-expressed
@@ -67,19 +69,21 @@ a cost that multiplies per nested march — and that is exactly where DuckDB fal
 
 ## Per-engine results
 
-### ClickHouse — ✅ compiles and runs; analysis-bound
+### ClickHouse — ✅ compiles and runs
 
-Runs as written. The dominant cost is **query analysis, not pixel compute**:
+Runs as written. Out of the box it spends an enormous, resolution-independent amount of time in
+*query analysis* (16 × 16 ≈ 50 s, the same as 192 × 90), which initially looked like an
+inherent cost of the deeply-nested lambda tree. Profiling found otherwise: ~80 % of analysis is
+`IQueryTreeNode::getTreeHash` (an uncached, whole-subtree walk), driven almost entirely by one
+default-on optimizer pass — `LogicalExpressionOptimizerPass::tryOptimizeAndCompareChain`
+(setting `optimize_and_compare_chain`). It inserts every `AND`-chain comparison's operands into
+hash maps keyed by their full tree hash; this scene's many `AND` validity checks
+(`hh>=0 AND aa>1e-9 AND t>eps AND y>0 AND y<baba`) have huge let-expanded operands, so it hashes
+a large fraction of the (exponentially expanded) tree and folds nothing.
 
-| resolution | wall time |
-|---|---|
-| 16 × 16 | ≈ 50 s |
-| 192 × 90 | ≈ 55–60 s |
-
-A 144× increase in pixels adds only ~10–20 % wall time — almost the entire cost is the
-fixed analysis of the deeply-nested lambda tree. At low resolution the ClickHouse number is
-essentially a *compile* cost, not ray-tracing throughput. (This is itself worth noting: the
-scene is a stress test of the analyzer, not of the execution engine.)
+`SET optimize_and_compare_chain = 0` cuts a 16 × 16 render from **~72 s to ~2.3 s (~30×)** with
+a byte-identical image, and saves ~99 s at full resolution. The benchmark query sets it, so the
+ClickHouse number below is real ray-tracing throughput, not a pathological analysis cost.
 
 ### DuckDB — ❌ faithful port, but the planner can't compile a multi-march query
 
@@ -153,25 +157,25 @@ visually indistinguishable. About 6 % of pixels differ by more than ±4; these a
 and shadow-boundary pixels — the inherent sub-pixel disagreement between two independent ray
 tracers evaluating the marches in different float order, with no anti-aliasing to hide it.
 
-**Speed.** Depth 2, on the same machine, at two resolutions:
+**Speed.** Depth 2, full resolution (2560 × 1200, 3.07 M px), same machine. The ClickHouse
+query runs with `optimize_and_compare_chain = 0` (see above):
 
-| engine | 192 × 90 (17 k px) | 2560 × 1200 (3.07 M px) | ~µs / pixel at full res |
-|---|---:|---:|---:|
-| ClickHouse (`arrayFold` + lambdas) | 54.4 s | **708 s** (11 m 48 s) | ≈ 214 (after ~50 s analysis) |
-| CedarDB (recursive CTEs) | 4.3 s | **580 s** (9 m 40 s) | ≈ 189 |
-| DuckDB | cannot compile | cannot compile | — |
+| engine | wall time | ~µs / pixel |
+|---|---:|---:|
+| ClickHouse (`arrayFold` + lambdas) | **655 s** (10 m 55 s) | ≈ 213 |
+| CedarDB (recursive CTEs) | **580 s** (9 m 40 s) | ≈ 189 |
+| DuckDB | cannot compile | — |
 
-The two resolutions measure different things. At **192 × 90** CedarDB looks ~12× faster, but
-that gap is almost all ClickHouse's *fixed* lambda-tree analysis cost (~50 s, essentially
-resolution-independent) — not ray-tracing throughput. At **2560 × 1200** the work is
-3.07 M pixels of actual compute, the fixed cost washes out, and the gap collapses to **~1.2×**
-(≈ 214 µs/pixel for ClickHouse after subtracting analysis, vs ≈ 189 µs/pixel for CedarDB).
+With the default `optimize_and_compare_chain = 1` the ClickHouse render takes 754 s (12 m 34 s)
+— the setting saves ~99 s here, and ~30× at analysis-dominated small sizes (16 × 16: ~72 s →
+~2.3 s), with a byte-identical image. With the pathological analysis cost removed, the two
+engines are close on raw per-pixel throughput (≈ 213 vs ≈ 189 µs/pixel).
 
 So the honest takeaway is *not* "CedarDB beats ClickHouse at ray tracing" — on raw per-pixel
 throughput they are close. It is: (1) CedarDB *compiles* the scene that DuckDB cannot, and
-(2) its recursive-CTE formulation carries no large fixed analysis cost, so it wins decisively
-at small sizes and modestly at large ones. A recursive-CTE *ClickHouse* query would likely
-close most of the remaining gap.
+(2) once ClickHouse's `optimize_and_compare_chain` cost is removed, neither carries a large
+fixed analysis cost, so the comparison is genuine per-pixel compute — where the two are close
+(CedarDB ~1.13× faster at full resolution).
 
 **One genuine CedarDB engine bug** surfaced, reported upstream as
 [cedardb/issues#71](https://github.com/cedardb/issues/issues/71):
@@ -206,13 +210,13 @@ depends entirely on **how the engine's planner represents a bounded loop**:
 
 - expand the loop into an **expression** (DuckDB's `list_reduce` macro) and several marches
   multiply into a query the planner can't analyse — it cannot compile the scene at all;
-- analyse the loop as a **bounded operator** (ClickHouse's `arrayFold`) and it compiles, but
-  the cost is concentrated in analysing the deeply-nested lambda tree (~54 s, resolution-independent);
+- analyse the loop as a **bounded operator** (ClickHouse's `arrayFold`) and it compiles and
+  runs (its only large cost was the `optimize_and_compare_chain` pass, removable with a setting);
 - iterate the loop as a **relation** (CedarDB's `WITH RECURSIVE`) and the planner sees an
   ordinary recursive join — it compiles *and* runs the six-march scene in ~4.3 s.
 
 So the renderer is an unusually sharp benchmark of **query-compiler architecture** rather than
-execution throughput. The same ~8 nested bounded loops are trivial, analysis-bound, or
+execution throughput. The same ~8 nested bounded loops are trivial, expensive-but-tunable, or
 impossible depending only on whether the engine treats the loop as a relation, an operator, or
 an expression. Two of three engines tried can run it; the one that can't is the one that
 inlines the loop into an expression.

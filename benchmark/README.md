@@ -68,8 +68,17 @@ reference:
 | **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference; **fastest** (all cores, no `ORDER BY` pin, `optimize_and_compare_chain = 0`; see finding 1) |
 | **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference; compiles & runs (see below) |
 | **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ planner can't compile a multi-march query — fails at *any* size, including 192 × 90 (see below) |
-| **Postgres** | no SQL lambdas/HOFs → recursive CTE / PL/pgSQL | not started (procedural) |
+| **Postgres** | no SQL lambdas/HOFs → recursive CTE + PL/pgSQL | ✅ ported, matches reference; full render *projected* at **~1.5 days** (see below) |
 | **MySQL** | no arrays/lambdas → recursive CTE / stored routines | not started (procedural) |
+
+### Test environment
+
+All timings here are from a single machine: an **AWS Graviton4** instance — 96 × Arm
+Neoverse-V2 cores (`aarch64`, one socket, 1 thread per core, single NUMA node), 185 GiB RAM,
+running **Ubuntu 26.04 LTS** (kernel `7.0.0-1004-aws`). ClickHouse is **version 26.7.1.1**, built
+locally with `-Og` — which in ClickHouse's build system still compiles at `-O3`, so its
+performance is release-equivalent and these wall times are representative. CedarDB runs from the
+`cedardb/cedardb:latest` image.
 
 ### Results (full resolution: 2560 × 1200, depth 2, same machine)
 
@@ -77,6 +86,7 @@ reference:
 |---|---:|---:|
 | ClickHouse | **17.8 s** | ~64 (6398 % CPU) |
 | CedarDB | **9 min 40 s** (580 s) | ~92 |
+| Postgres | **~1.5 days** (projected from 48 × 24 — see below) | 1 (single backend) |
 | DuckDB | **does not compile** — fails at any size, even 192 × 90 | — |
 
 Same scene, same image (byte-identical pixel sums; visually identical — see
@@ -92,6 +102,26 @@ query with more than one ray-march at *any* resolution.
 
 CedarDB's standing is unchanged in kind: its win is that it **compiles** this scene at all (the
 recursive-CTE shape DuckDB can't plan) — not raw throughput.
+
+#### Postgres projection
+
+`queries/postgres.sql` is a faithful port — the marches become a `WITH RECURSIVE` advancing every
+ray in lockstep, and the vector/SDF helpers are `IMMUTABLE` PL/pgSQL functions — and it reproduces
+the reference image. It is far too slow to run at full resolution, so the figure above is
+**projected**, not measured:
+
+- **Planning / fixed overhead is negligible.** A 1 × 1 image renders in ~0.15 s, so query planning
+  and PL/pgSQL setup contribute almost nothing — essentially all the time is per-pixel ray work.
+- **48 × 24 (1,152 px, depth 2) renders in ~49 s** on the same machine — about **42 ms per pixel**.
+- Scaling that rate to the full **2560 × 1200 (3.07 M px)** gives **~1.5 days (~36 h)** — slow, but
+  *not* months or years.
+
+That is a **lower bound**. Because the march advances all rays in lockstep, total cost is roughly
+*(deepest ray's step count) × (ray count)*, and the step count is content-dependent rather than
+proportional to resolution: **16 × 16 (256 px) already takes ~68 s — longer than 48 × 24 (1,152 px)**
+because a few grazing rays drag the whole lockstep recursion deeper. So the real full render is at
+least ~1.5 days and plausibly several days. For scale, ClickHouse renders the same scene in 17.8 s
+(~7,000× faster) and CedarDB in 580 s (~225× faster).
 
 ### Findings
 
@@ -180,5 +210,8 @@ subscripting a `CASE`-produced array under `ORDER BY` aborts the server (worked 
 fine — that crash was the same `CASE`-array bug.)
 
 **4. Postgres / MySQL have no lambdas *and* no advanced recursive planner.** A faithful port
-still needs a recursive-CTE reformulation of every loop, but without CedarDB's planner the
-six-march query is a much riskier bet; these remain the procedural / recursive-CTE frontier.
+still needs a recursive-CTE reformulation of every loop. **Postgres** handles it —
+`queries/postgres.sql` reproduces the reference image with `IMMUTABLE` PL/pgSQL helpers and a
+lockstep `WITH RECURSIVE` march — but at a steep cost: a projected ~1.5 days at full resolution
+(~225× slower than CedarDB; see the Postgres projection above). **MySQL** remains the procedural /
+recursive-CTE frontier.

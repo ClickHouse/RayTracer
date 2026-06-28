@@ -3,7 +3,7 @@ WITH
     (24.0, 0.0, 6.0)    AS target,
     (24.0, -45.0, 12.0) AS eye,
     36.0 AS fovDeg,
-    192.0 AS imgW, 90.0 AS imgH,
+    {W:UInt32} AS W, {H:UInt32} AS H, W::Float64 AS imgW, H::Float64 AS imgH,
     2 AS maxDepth,
     (9.0, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
@@ -147,10 +147,10 @@ FROM (
         number AS pixel,
         lightPos AS lpos,                                   /* deterministic: no light jitter */
         CAST((eye,
-              vn(va(camFwd, va(vm(camRight, (((number % 192) + 0.5) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                                vm(camUp,    (1.0 - (intDiv(number, 192) + 0.5) / imgH * 2.0) * tanHalf)))),
+              vn(va(camFwd, va(vm(camRight, (((number % W) + 0.5) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                                vm(camUp,    (1.0 - (intDiv(number, W) + 0.5) / imgH * 2.0) * tanHalf)))),
               1.0, (0.0, 0.0, 0.0), 1.0) AS Tuple(Tuple(Float64,Float64,Float64), Tuple(Float64,Float64,Float64), Float64, Tuple(Float64,Float64,Float64), Float64)) AS st0   /* centered ray */
-      FROM numbers_mt(192 * 90)
+      FROM numbers_mt(W * H)
     )
   )
 )

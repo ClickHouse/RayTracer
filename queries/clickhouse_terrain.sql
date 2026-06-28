@@ -15,19 +15,22 @@
 --  The chrome letters/planet reflect the terrain and sky; distance fog blends
 --  everything into the horizon. Pixels stream to the PNG output format.
 --
---  Run it:
---      clickhouse local --queries-file clickhouse_terrain.sql > out.png
+--  Run it (image size and samples are runtime parameters):
+--      clickhouse local --output_format_image_width 2560 --output_format_image_height 1200 \
+--                       --param_SAMPLES 8 --queries-file clickhouse_terrain.sql > out.png
 --
---  Knobs: tAmp/tscale (terrain height & feature size), the letters' Z0 (how high
---  they float), maxDepth (reflection bounces), terrSteps, SAMPLES, the camera,
---  output_format_image_*.
+--  Knobs: image size via --output_format_image_width/height (read in SQL with `getSetting`),
+--  samples per pixel via --param_SAMPLES; tAmp/tscale (terrain height & feature size), the
+--  letters' Z0 (how high they float), maxDepth (reflection bounces), terrSteps, the camera.
 -- ============================================================================
 WITH
     2.5 AS z0, 0.6 AS ty,
     (24.0, 0.0, 6.0)    AS target,
     (24.0, -45.0, 12.0) AS eye,
     36.0 AS fovDeg,
-    2560.0 AS imgW, 1200.0 AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW, H::Float64 AS imgH,
     2 AS maxDepth,
     (9.0, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
@@ -161,8 +164,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
-    pixel % 2560      AS x,                         /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, 2560) AS y
+    pixel % W      AS x,                            /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   SELECT pixel, va(st.4, if(st.5 > 0.5, vm(sky(st.2), st.3), (0.0,0.0,0.0))) AS col
   FROM (
@@ -170,21 +173,20 @@ FROM (
       arrayFold((s, i) -> if(s.5 > 0.5, oneBounce(s, lpos), s), range(maxDepth), st0) AS st
     FROM (
       SELECT
-        intDiv(number, 8) AS pixel,
-        number % 8 AS sample,
+        intDiv(number, {SAMPLES:UInt32}) AS pixel,
+        number % {SAMPLES:UInt32} AS sample,
         va(lightPos, (lightR * (rnd(pixel, sample, 3) - 0.5),
                       lightR * (rnd(pixel, sample, 4) - 0.5),
                       lightR * (rnd(pixel, sample, 5) - 0.5))) AS lpos,
         CAST((eye,
-              vn(va(camFwd, va(vm(camRight, (((pixel % 2560) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                                vm(camUp,    (1.0 - (intDiv(pixel, 2560) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf)))),
+              vn(va(camFwd, va(vm(camRight, (((pixel % W) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                                vm(camUp,    (1.0 - (intDiv(pixel, W) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf)))),
               1.0, (0.0, 0.0, 0.0), 1.0) AS Tuple(Tuple(Float64,Float64,Float64), Tuple(Float64,Float64,Float64), Float64, Tuple(Float64,Float64,Float64), Float64)) AS st0
-      FROM numbers_mt(2560 * 1200 * 8)
+      FROM numbers_mt(W * H * {SAMPLES:UInt32})
     )
   )
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = 2560, output_format_image_height = 1200,
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          optimize_and_compare_chain = 0
 FORMAT PNG

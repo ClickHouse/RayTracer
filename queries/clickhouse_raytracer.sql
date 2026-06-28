@@ -19,16 +19,15 @@
 --    * Pixels are emitted straight to a PNG via ClickHouse's `PNG` output format
 --      (columns r, g, b in [0, 1], one row per pixel in scanline order).
 --
---  Run it:
---      clickhouse local --queries-file clickhouse_raytracer.sql > clickhouse.png
+--  Run it (image size and samples are runtime parameters):
+--      clickhouse local --output_format_image_width 640 --output_format_image_height 256 \
+--                       --param_SAMPLES 24 --queries-file clickhouse_raytracer.sql > clickhouse.png
 --
---  Quality / speed knobs live in the WITH prelude and the SETTINGS clause:
---    output_format_image_width / _height ... resolution (keep in sync with the
---                                            `imgW`/`imgH` constants and the
---                                            `numbers(W * H)` / `% W` literals)
---    range(N) AS sample .................... samples per pixel (anti-aliasing +
+--  Quality / speed knobs:
+--    --output_format_image_width / _height . resolution (read in SQL with `getSetting`)
+--    --param_SAMPLES ....................... samples per pixel (anti-aliasing +
 --                                            soft shadows; more = less noise)
---    maxDepth .............................. number of ray bounces
+--    maxDepth .............................. number of ray bounces (in the WITH prelude)
 -- ============================================================================
 WITH RECURSIVE
     /* ----- scene / camera constants ----- */
@@ -41,8 +40,10 @@ WITH RECURSIVE
     (24.0, 0.0, 6.0)    AS target,        /* center of the text block */
     (24.0, -42.0, 12.0) AS eye,           /* camera position (in front, -y) */
     34.0      AS fovDeg,          /* vertical field of view, degrees */
-    640.0     AS imgW,
-    256.0     AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW,
+    H::Float64 AS imgH,
     4   AS maxDepth,        /* number of ray-trace bounces */
     (9.0, -30.0, 52.0)  AS lightPos,      /* area-light center */
     5.0       AS lightR,          /* area-light radius (soft shadows) */
@@ -134,10 +135,10 @@ WITH RECURSIVE
         va(lightPos, (lightR * (rnd(pixel, sample, 3) - 0.5),
                       lightR * (rnd(pixel, sample, 4) - 0.5),
                       lightR * (rnd(pixel, sample, 5) - 0.5))) AS lpos,
-        (((pixel % 640) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf AS ndcx,
-        (1.0 - (intDiv(pixel, 640) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf      AS ndcy
-      FROM numbers(640 * 256)
-      ARRAY JOIN range(24) AS sample
+        (((pixel % W) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf AS ndcx,
+        (1.0 - (intDiv(pixel, W) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf      AS ndcy
+      FROM numbers(W * H)
+      ARRAY JOIN range({SAMPLES:UInt32}) AS sample
     )
   )
       UNION ALL
@@ -210,8 +211,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
-    pixel % 640      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, 640) AS y
+    pixel % W      AS x,                            /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   /* per sample, the terminal ray (max depth) holds the fully accumulated color */
   SELECT pixel, argMax(va(acc, if(alive, vm(sky(d), thr), (0.0, 0.0, 0.0))), depth) AS col
@@ -219,8 +220,7 @@ FROM (
   GROUP BY pixel, sample
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = 640, output_format_image_height = 256,
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          max_recursive_cte_evaluation_depth = 64,
          optimize_and_compare_chain = 0
 FORMAT PNG

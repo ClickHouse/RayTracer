@@ -159,7 +159,9 @@ PRELUDE = f"""WITH
     (24.0, 0.0, 6.0)    AS target,
     (24.0, -45.0, 12.0) AS eye,
     36.0 AS fovDeg,
-    {W}.0 AS imgW, {H}.0 AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW, H::Float64 AS imgH,
     {DEPTH} AS maxDepth,
     (9.0, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
@@ -343,8 +345,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
-    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, {W}) AS y
+    pixel % W      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   SELECT pixel, va(st.4, if(st.5 > 0.5, vm(sky(st.2), st.3), (0.0,0.0,0.0))) AS col
   FROM (
@@ -352,22 +354,21 @@ FROM (
       arrayFold((s, i) -> if(s.5 > 0.5, oneBounce(s, lpos), s), range(maxDepth), st0) AS st
     FROM (
       SELECT
-        intDiv(number, {SAMPLES}) AS pixel,
-        number % {SAMPLES} AS sample,
+        intDiv(number, {{SAMPLES:UInt32}}) AS pixel,
+        number % {{SAMPLES:UInt32}} AS sample,
         va(lightPos, (lightR * (rnd(pixel, sample, 3) - 0.5),
                       lightR * (rnd(pixel, sample, 4) - 0.5),
                       lightR * (rnd(pixel, sample, 5) - 0.5))) AS lpos,
         CAST((eye,
-              vn(va(camFwd, va(vm(camRight, (((pixel % {W}) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                                vm(camUp,    (1.0 - (intDiv(pixel, {W}) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf)))),
+              vn(va(camFwd, va(vm(camRight, (((pixel % W) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                                vm(camUp,    (1.0 - (intDiv(pixel, W) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf)))),
               1.0, (0.0, 0.0, 0.0), 1.0) AS {STT}) AS st0
-      FROM numbers_mt({W} * {H} * {SAMPLES})
+      FROM numbers_mt(W * H * {{SAMPLES:UInt32}})
     )
   )
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          optimize_and_compare_chain = 0
 FORMAT PNG
 """

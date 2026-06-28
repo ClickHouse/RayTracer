@@ -40,8 +40,10 @@ PRELUDE = f"""WITH RECURSIVE
     (24.0, 0.0, 6.0)    AS target,        /* center of the text block */
     (24.0, -42.0, 12.0) AS eye,           /* camera position (in front, -y) */
     34.0      AS fovDeg,          /* vertical field of view, degrees */
-    {W}.0     AS imgW,
-    {H}.0     AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64     AS imgW,
+    H::Float64     AS imgH,
     {DEPTH}   AS maxDepth,        /* number of ray-trace bounces */
     (9.0, -30.0, 52.0)  AS lightPos,      /* area-light center */
     5.0       AS lightR,          /* area-light radius (soft shadows) */
@@ -134,10 +136,10 @@ BASE = """  (
         va(lightPos, (lightR * (rnd(pixel, sample, 3) - 0.5),
                       lightR * (rnd(pixel, sample, 4) - 0.5),
                       lightR * (rnd(pixel, sample, 5) - 0.5))) AS lpos,
-        (((pixel % {W}) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf AS ndcx,
-        (1.0 - (intDiv(pixel, {W}) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf      AS ndcy
-      FROM numbers({W} * {H})
-      ARRAY JOIN range({S}) AS sample
+        (((pixel % W) + rnd(pixel, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf AS ndcx,
+        (1.0 - (intDiv(pixel, W) + rnd(pixel, sample, 2)) / imgH * 2.0) * tanHalf      AS ndcy
+      FROM numbers(W * H)
+      ARRAY JOIN range({SAMPLES:UInt32}) AS sample
     )
   )""".replace("{W}", str(W)).replace("{H}", str(H)).replace("{S}", str(SAMPLES))
 
@@ -220,8 +222,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
-    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, {W}) AS y
+    pixel % W      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   /* per sample, the terminal ray (max depth) holds the fully accumulated color */
   SELECT pixel, argMax(va(acc, if(alive, vm(sky(d), thr), (0.0, 0.0, 0.0))), depth) AS col
@@ -229,8 +231,7 @@ FROM (
   GROUP BY pixel, sample
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          max_recursive_cte_evaluation_depth = 64,
          optimize_and_compare_chain = 0
 FORMAT PNG

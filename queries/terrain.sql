@@ -10,15 +10,18 @@
 --  a warm directional sun, with a marched shadow ray and distance fog into the
 --  sky. Pixels stream to ClickHouse's PNG output format.
 --
---  Run it:
---      clickhouse local --queries-file terrain.sql > terrain.png
+--  Run it (image size and samples are runtime parameters):
+--      clickhouse local --output_format_image_width 896 --output_format_image_height 504 \
+--                       --param_SAMPLES 4 --queries-file terrain.sql > terrain.png
 --
---  Knobs: amp / nscale (terrain height & feature size), the fBm octaves in the
---  `fbm` lambda, the 170-step `march` and 48-step `shadowed`, camera eye/target,
---  the SAMPLES factor in numbers_mt(W*H*SAMPLES), output_format_image_*.
+--  Knobs: image size via --output_format_image_width/height (read in SQL with `getSetting`),
+--  samples per pixel via --param_SAMPLES; amp / nscale (terrain height & feature size), the fBm
+--  octaves in the `fbm` lambda, the 170-step `march` and 48-step `shadowed`, camera eye/target.
 -- ============================================================================
 WITH
-    896.0 AS imgW, 504.0 AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW, H::Float64 AS imgH,
     (0.0, -9.0, 4.2)  AS eye,
     (0.0,  9.0, 1.3)  AS target,
     52.0 AS fovDeg,
@@ -79,23 +82,22 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0), 1.0/2.2), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0), 1.0/2.2), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b,
-    pixel % 896      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, 896) AS y
+    pixel % W      AS x,                            /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   SELECT pixel,
     arrayMap(t -> arrayMap(hp -> arrayMap(hgt -> arrayMap(nrm -> arrayMap(lit -> arrayMap(light -> arrayMap(ground -> arrayMap(fog -> if(t >= 1e8, sky(D), mix(ground, skyHorizon, fog)), [greatest(0.0, least(1.0, t/fogDist))])[1], [vmul3(terrainCol(hgt), light)])[1], [va(vm((0.42,0.54,0.80), 0.30 + 0.25*greatest(nrm.3,0.0)), vm(sunCol, 1.5*lit))])[1], [greatest(vd(nrm, sun), 0.0) * if(shadowed(va(hp, vm(nrm, 0.08))), 0.0, 1.0)])[1], [terrainN(hp.1, hp.2)])[1], [height(hp.1, hp.2)])[1], [va(O, vm(D, t))])[1], [march(O, D)])[1] AS col
   FROM (
     SELECT
-      intDiv(number, 4) AS pixel,
-      number % 4 AS sample,
+      intDiv(number, {SAMPLES:UInt32}) AS pixel,
+      number % {SAMPLES:UInt32} AS sample,
       eye AS O,
-      vn(va(camFwd, va(vm(camRight, (((pixel % 896) + (cityHash64(pixel,sample,1)%1024)/1024.0) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                       vm(camUp,    (1.0 - (intDiv(pixel, 896) + (cityHash64(pixel,sample,2)%1024)/1024.0) / imgH * 2.0) * tanHalf)))) AS D
-    FROM numbers_mt(896 * 504 * 4)
+      vn(va(camFwd, va(vm(camRight, (((pixel % W) + (cityHash64(pixel,sample,1)%1024)/1024.0) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                       vm(camUp,    (1.0 - (intDiv(pixel, W) + (cityHash64(pixel,sample,2)%1024)/1024.0) / imgH * 2.0) * tanHalf)))) AS D
+    FROM numbers_mt(W * H * {SAMPLES:UInt32})
   )
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = 896, output_format_image_height = 504,
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          optimize_and_compare_chain = 0
 FORMAT PNG

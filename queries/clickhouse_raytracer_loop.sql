@@ -32,10 +32,11 @@
 --      ray state is kept all-Float64 (the alive flag too: 1.0 / 0.0).
 --
 --  Run it:
---      clickhouse local --queries-file clickhouse_raytracer_loop.sql > clickhouse.png
+--      clickhouse local --output_format_image_width 640 --output_format_image_height 256 \
+--                       --param_SAMPLES 24 --queries-file clickhouse_raytracer_loop.sql > clickhouse.png
 --
---  Knobs: output_format_image_width/height (+ imgW/imgH and the numbers_mt(W*H)
---  / % W literals), range(N) AS sample (samples/pixel), maxDepth (bounces).
+--  Knobs: image size via --output_format_image_width/height (read in SQL with `getSetting`),
+--  samples/pixel via --param_SAMPLES; maxDepth (bounces).
 -- ============================================================================
 WITH
     ['.###..##...#.......#....#...#....................', '#...#..#...........#....#...#....................', '#......#...#...###.#.##.#...#..##..#..#..###..##.', '#......#...#..#....#.#..#####.#..#.#..#.#....#..#', '#......#...#..#....##...#...#.#..#.#..#..##..####', '#...#..#...#..#....#.#..#...#.#..#.#..#....#.#...', '.###...##..#...###.#..#.#...#..##...###.###...###'] AS banner,
@@ -44,7 +45,9 @@ WITH
     (24.0, 0.0, 6.0)    AS target,
     (24.0, -42.0, 12.0) AS eye,
     34.0 AS fovDeg,
-    640.0 AS imgW, 256.0 AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW, H::Float64 AS imgH,
     4 AS maxDepth,
     (9.0, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
@@ -111,8 +114,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
-    pixel % 640      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, 640) AS y
+    pixel % W      AS x,                            /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   SELECT pixel, va(st.4, if(st.5 > 0.5, vm(sky(st.2), st.3), (0.0,0.0,0.0))) AS col
   FROM (
@@ -126,16 +129,15 @@ FROM (
                       lightR * (rnd(number, sample, 4) - 0.5),
                       lightR * (rnd(number, sample, 5) - 0.5))) AS lpos,
         CAST((eye,
-              vn(va(camFwd, va(vm(camRight, (((number % 640) + rnd(number, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                                vm(camUp,    (1.0 - (intDiv(number, 640) + rnd(number, sample, 2)) / imgH * 2.0) * tanHalf)))),
+              vn(va(camFwd, va(vm(camRight, (((number % W) + rnd(number, sample, 1)) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                                vm(camUp,    (1.0 - (intDiv(number, W) + rnd(number, sample, 2)) / imgH * 2.0) * tanHalf)))),
               1.0, (0.0, 0.0, 0.0), 1.0) AS Tuple(Tuple(Float64,Float64,Float64), Tuple(Float64,Float64,Float64), Float64, Tuple(Float64,Float64,Float64), Float64)) AS st0
-      FROM numbers_mt(640 * 256)
-      ARRAY JOIN range(24) AS sample
+      FROM numbers_mt(W * H)
+      ARRAY JOIN range({SAMPLES:UInt32}) AS sample
     )
   )
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = 640, output_format_image_height = 256,
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          optimize_and_compare_chain = 0
 FORMAT PNG

@@ -41,8 +41,8 @@ benchmark/
 
 ```bash
 # ClickHouse reference (pixel dump + image), full resolution
-python3 gen_clickhouse_bench.py 2560 1200 2 data > queries/clickhouse.sql
-clickhouse local --queries-file queries/clickhouse.sql > out/clickhouse.tsv
+python3 gen_clickhouse_bench.py 2560 1200 2 data > queries/clickhouse.sql   # depth 2; W/H are runtime params
+clickhouse local --param_W 2560 --param_H 1200 --queries-file queries/clickhouse.sql > out/clickhouse.tsv
 python3 tools.py render out/clickhouse.tsv 2560 1200 out/clickhouse_full.png
 
 # CedarDB port (Postgres wire protocol; here on host port 5499)

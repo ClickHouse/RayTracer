@@ -70,10 +70,14 @@ crossing, so it is both fast and free of step-banding. It is shaded with a heigh
 
 ## Running
 
-Every file in [`queries/`](queries) is complete and self-contained. Render one with:
+Every file in [`queries/`](queries) is complete and self-contained, and **parameterized**: the
+image size comes from ClickHouse's image-output settings (read in SQL with `getSetting`) and the
+samples per pixel from a `{SAMPLES:UInt32}` query parameter — one query renders any resolution.
+Render one with:
 
 ```bash
-clickhouse local --queries-file queries/clickhouse_terrain.sql > out.png
+clickhouse local --output_format_image_width 2560 --output_format_image_height 1200 \
+                 --param_SAMPLES 8 --queries-file queries/clickhouse_terrain.sql > out.png
 ```
 
 | Query | Scene | Resolution |
@@ -84,13 +88,14 @@ clickhouse local --queries-file queries/clickhouse_terrain.sql > out.png
 | [`terrain.sql`](queries/terrain.sql) | Perlin-noise terrain | 896 × 504 |
 | [`clickhouse_terrain.sql`](queries/clickhouse_terrain.sql) | ClickHouse over the terrain (hero image) | 2560 × 1200 |
 
-The queries are emitted by the parameterized Python generators in [`generators/`](generators)
-(resolution, samples-per-pixel and bounce depth are command-line arguments). For example,
-to re-create the hero image:
+The queries are emitted by the Python generators in [`generators/`](generators); the scene and
+bounce depth are baked at generation time, while image size and samples per pixel stay runtime
+parameters of the emitted query. For example, to re-create the hero image:
 
 ```bash
-python3 generators/gen_combined.py 2560 1200 8 2 > scene.sql
-clickhouse local --queries-file scene.sql > scene.png
+python3 generators/gen_combined.py 2560 1200 8 2 > scene.sql   # depth 2; W/H/samples are runtime
+clickhouse local --output_format_image_width 2560 --output_format_image_height 1200 \
+                 --param_SAMPLES 8 --queries-file scene.sql > scene.png
 ```
 
 ## Trying with other databases

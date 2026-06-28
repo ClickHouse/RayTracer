@@ -155,12 +155,19 @@ ringN = lets(RING_CORE + [("hp","va(O, vm(D, tm))")],
     "    if(greatest((rg.5-O.1)/D.1,(rg.7-O.1)/D.1) <= greatest((rg.6-O.3)/D.3,(rg.8-O.3)/D.3),"
     "       (if(D.1>0.0,-1.0,1.0),0.0,0.0), (0.0,0.0,if(D.3>0.0,-1.0,1.0)))))")
 
+# Image size as parameters: PNG reads it from the output image settings (set on the CLI) via
+# getSetting; the TSV/data path has no image setting, so it takes W and H as query parameters.
+if OUTPUT == 'png':
+    _WH = "getSetting('output_format_image_width')::UInt64 AS W, getSetting('output_format_image_height')::UInt64 AS H,"
+else:
+    _WH = "{W:UInt32} AS W, {H:UInt32} AS H,"
+
 PRELUDE = f"""WITH
     {Z0} AS z0, {TY} AS ty,
     (24.0, 0.0, 6.0)    AS target,
     (24.0, -45.0, 12.0) AS eye,
     36.0 AS fovDeg,
-    {W}.0 AS imgW, {H}.0 AS imgH,
+    {_WH} W::Float64 AS imgW, H::Float64 AS imgH,
     {DEPTH} AS maxDepth,
     (9.0, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
@@ -357,10 +364,9 @@ if OUTPUT == 'png':
     # the rows need no ordering. (Without them, PNG fills pixels in scanline order and would need an
     # ORDER BY, which the optimizer turns into a single-stream post-sort projection -- the heavy
     # per-pixel ray-trace would then run on one core.) imgW pixels per row: x = pixel % W, y = row.
-    PROJECT = (f"pixel % {W} AS x, intDiv(pixel, {W}) AS y, "
+    PROJECT = (f"pixel % W AS x, intDiv(pixel, W) AS y, "
                f"{Rexpr(1)} AS r, {Rexpr(2)} AS g, {Rexpr(3)} AS b")
-    SUFFIX  = (f"SETTINGS output_format_image_width = {W}, output_format_image_height = {H}, "
-               f"{_OPT}\nFORMAT PNG")
+    SUFFIX  = f"SETTINGS {_OPT}\nFORMAT PNG"
 else:   # one row per pixel: idx, R, G, B as 0..255 ints (scanline order) for cross-engine diff
     PROJECT = (f"pixel AS idx, toUInt8(round({Rexpr(1)} * 255)) AS r, "
                f"toUInt8(round({Rexpr(2)} * 255)) AS g, toUInt8(round({Rexpr(3)} * 255)) AS b")
@@ -383,10 +389,10 @@ FROM (
         number AS pixel,
         lightPos AS lpos,                                   /* deterministic: no light jitter */
         CAST((eye,
-              vn(va(camFwd, va(vm(camRight, (((number % {W}) + 0.5) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                                vm(camUp,    (1.0 - (intDiv(number, {W}) + 0.5) / imgH * 2.0) * tanHalf)))),
+              vn(va(camFwd, va(vm(camRight, (((number % W) + 0.5) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                                vm(camUp,    (1.0 - (intDiv(number, W) + 0.5) / imgH * 2.0) * tanHalf)))),
               1.0, (0.0, 0.0, 0.0), 1.0) AS {STT}) AS st0   /* centered ray */
-      FROM numbers_mt({W} * {H})
+      FROM numbers_mt(W * H)
     )
   )
 )

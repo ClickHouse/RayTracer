@@ -37,7 +37,9 @@ FBM = ("(vnoise(x, y)*0.5 + vnoise(x*2.0, y*2.0)*0.25 "
        " + vnoise(x*4.0, y*4.0)*0.125 + vnoise(x*8.0, y*8.0)*0.0625) / 0.9375")
 
 QUERY = f"""WITH
-    {W}.0 AS imgW, {H}.0 AS imgH,
+    getSetting('output_format_image_width')::UInt64  AS W,
+    getSetting('output_format_image_height')::UInt64 AS H,
+    W::Float64 AS imgW, H::Float64 AS imgH,
     (0.0, -9.0, 4.2)  AS eye,
     (0.0,  9.0, 1.3)  AS target,
     52.0 AS fovDeg,
@@ -98,8 +100,8 @@ SELECT
     clamp(pow(greatest(avg(col.1), 0.0), 1.0/2.2), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0), 1.0/2.2), 0.0, 1.0) AS g,
     clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b,
-    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
-    intDiv(pixel, {W}) AS y
+    pixel % W      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, W) AS y
 FROM (
   SELECT pixel,
     {lets([
@@ -116,17 +118,16 @@ FROM (
     "if(t >= 1e8, sky(D), mix(ground, skyHorizon, fog))")} AS col
   FROM (
     SELECT
-      intDiv(number, {SAMPLES}) AS pixel,
-      number % {SAMPLES} AS sample,
+      intDiv(number, {{SAMPLES:UInt32}}) AS pixel,
+      number % {{SAMPLES:UInt32}} AS sample,
       eye AS O,
-      vn(va(camFwd, va(vm(camRight, (((pixel % {W}) + (cityHash64(pixel,sample,1)%1024)/1024.0) / imgW * 2.0 - 1.0) * aspect * tanHalf),
-                       vm(camUp,    (1.0 - (intDiv(pixel, {W}) + (cityHash64(pixel,sample,2)%1024)/1024.0) / imgH * 2.0) * tanHalf)))) AS D
-    FROM numbers_mt({W} * {H} * {SAMPLES})
+      vn(va(camFwd, va(vm(camRight, (((pixel % W) + (cityHash64(pixel,sample,1)%1024)/1024.0) / imgW * 2.0 - 1.0) * aspect * tanHalf),
+                       vm(camUp,    (1.0 - (intDiv(pixel, W) + (cityHash64(pixel,sample,2)%1024)/1024.0) / imgH * 2.0) * tanHalf)))) AS D
+    FROM numbers_mt(W * H * {{SAMPLES:UInt32}})
   )
 )
 GROUP BY pixel
-SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
-         max_block_size = 2048,
+SETTINGS max_block_size = 2048,
          optimize_and_compare_chain = 0
 FORMAT PNG
 """

@@ -349,7 +349,9 @@ def Rexpr(ch):
 # (let-expanded) operands make ClickHouse's LogicalExpressionOptimizerPass hash huge
 # subtrees in query analysis (~50s, resolution-independent) while folding nothing. Turning
 # it off makes the analysis ~30x faster and leaves the image identical.
-_OPT = "optimize_and_compare_chain = 0, max_block_size = 2048, max_threads = 24"
+# max_threads is left unset so ClickHouse uses all available cores (the render is
+# embarrassingly parallel over pixels); not pinning it keeps the benchmark portable.
+_OPT = "optimize_and_compare_chain = 0, max_block_size = 2048"
 if OUTPUT == 'png':
     PROJECT = f"{Rexpr(1)} AS r, {Rexpr(2)} AS g, {Rexpr(3)} AS b"
     SUFFIX  = (f"SETTINGS output_format_image_width = {W}, output_format_image_height = {H}, "
@@ -358,6 +360,12 @@ else:   # one row per pixel: idx, R, G, B as 0..255 ints (scanline order) for cr
     PROJECT = (f"pixel AS idx, toUInt8(round({Rexpr(1)} * 255)) AS r, "
                f"toUInt8(round({Rexpr(2)} * 255)) AS g, toUInt8(round({Rexpr(3)} * 255)) AS b")
     SUFFIX  = f"SETTINGS {_OPT}\nFORMAT TSV"
+
+# ORDER BY pixel is only needed for PNG (which writes pixels in scanline order). The optimizer
+# inlines the nested subqueries, so an outer ORDER BY makes the heavy per-pixel ray-trace run in
+# the single-stream post-sort projection (1 core). The TSV dump is keyed by idx in tools.py, so it
+# needs no ordering -- dropping ORDER BY lets the per-pixel compute run on all cores.
+ORDERBY = "ORDER BY pixel" if OUTPUT == 'png' else ""
 
 QUERY = PRELUDE + f"""
 SELECT {PROJECT}
@@ -378,7 +386,7 @@ FROM (
     )
   )
 )
-ORDER BY pixel
+{ORDERBY}
 {SUFFIX}
 """
 sys.stdout.write(QUERY)

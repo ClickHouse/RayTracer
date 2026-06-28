@@ -56,7 +56,7 @@ python3 tools.py compare out/clickhouse.tsv out/cedardb.tsv
 
 ## The image
 
-Full resolution (2560 × 1200), rendered by **CedarDB** — visually identical to the ClickHouse
+Full resolution (2560 × 1200), rendered by **CedarDB** in 9 min 40 sec — visually identical to the ClickHouse result rendered in 18 sec.
 reference:
 
 ![full](out/cedardb_full.png)

@@ -97,7 +97,9 @@ QUERY = f"""WITH
 SELECT
     clamp(pow(greatest(avg(col.1), 0.0), 1.0/2.2), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0), 1.0/2.2), 0.0, 1.0) AS g,
-    clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b
+    clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b,
+    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, {W}) AS y
 FROM (
   SELECT pixel,
     {lets([
@@ -123,9 +125,9 @@ FROM (
   )
 )
 GROUP BY pixel
-ORDER BY pixel
 SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
-         max_block_size = 2048, max_threads = 24
+         max_block_size = 2048,
+         optimize_and_compare_chain = 0
 FORMAT PNG
 """
 sys.stdout.write(QUERY)

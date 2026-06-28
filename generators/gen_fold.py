@@ -150,7 +150,9 @@ QUERY = PRELUDE + f"""
 SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
-    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b
+    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
+    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, {W}) AS y
 FROM (
   SELECT pixel, va(st.4, if(st.5 > 0.5, vm(sky(st.2), st.3), (0.0,0.0,0.0))) AS col
   FROM (
@@ -173,8 +175,9 @@ FROM (
   )
 )
 GROUP BY pixel
-ORDER BY pixel
-SETTINGS output_format_image_width = {W}, output_format_image_height = {H}
+SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
+         max_block_size = 2048,
+         optimize_and_compare_chain = 0
 FORMAT PNG
 """
 

@@ -219,7 +219,9 @@ QUERY = f"""{PRELUDE}
 SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
-    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b
+    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
+    pixel % {W}      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, {W}) AS y
 FROM (
   /* per sample, the terminal ray (max depth) holds the fully accumulated color */
   SELECT pixel, argMax(va(acc, if(alive, vm(sky(d), thr), (0.0, 0.0, 0.0))), depth) AS col
@@ -227,9 +229,10 @@ FROM (
   GROUP BY pixel, sample
 )
 GROUP BY pixel
-ORDER BY pixel
 SETTINGS output_format_image_width = {W}, output_format_image_height = {H},
-         max_recursive_cte_evaluation_depth = 64
+         max_block_size = 2048,
+         max_recursive_cte_evaluation_depth = 64,
+         optimize_and_compare_chain = 0
 FORMAT PNG
 """
 

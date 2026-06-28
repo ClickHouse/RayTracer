@@ -6,14 +6,16 @@ shrunk to a small deterministic benchmark — on engines other than ClickHouse.
 
 > **TL;DR.** The renderer is a single SQL query built from ~30 nested lambdas and 4
 > `arrayFold` loops, several of which are *ray-marches* (iterating a signed-distance field
-> along the ray). **ClickHouse** compiles and runs it; its out-of-box analysis cost was almost
-> entirely one default-on optimizer pass (`optimize_and_compare_chain`), removable with a
-> setting (~30× faster analysis, identical image).
+> along the ray). **ClickHouse** compiles and runs it, and once two artefacts are removed —
+> the `optimize_and_compare_chain` analysis blow-up (a setting) and an `ORDER BY` that pinned the
+> render to one core — it renders the full 2560 × 1200 scene in **17.8 s on all cores**, ~33×
+> faster than the next engine.
 > **DuckDB** — the only other engine here with SQL lambdas — translates faithfully but its
 > **planner cannot compile a query with more than one ray-march** (superlinear, effectively
 > exponential, in the number of marches). **CedarDB** has no lambdas, so it is re-expressed
 > set-based with the marches as **recursive CTEs** — and its planner compiles *and* runs the
-> full six-march scene in ~4.3 s, matching the reference image. The headline result: *the
+> full six-march scene (580 s, ~33× slower than ClickHouse, but it runs), matching the reference
+> image. The headline result: *the
 > ray-march is fatal to DuckDB as an expression but cheap to CedarDB as a relation* — how an
 > engine represents the loop decides whether the renderer compiles at all.
 
@@ -157,25 +159,30 @@ visually indistinguishable. About 6 % of pixels differ by more than ±4; these a
 and shadow-boundary pixels — the inherent sub-pixel disagreement between two independent ray
 tracers evaluating the marches in different float order, with no anti-aliasing to hide it.
 
-**Speed.** Depth 2, full resolution (2560 × 1200, 3.07 M px), same machine. The ClickHouse
-query runs with `optimize_and_compare_chain = 0` (see above):
+**Speed.** Depth 2, full resolution (2560 × 1200, 3.07 M px), same machine:
 
-| engine | wall time | ~µs / pixel |
+| engine | wall time | cores used |
 |---|---:|---:|
-| ClickHouse (`arrayFold` + lambdas) | **655 s** (10 m 55 s) | ≈ 213 |
-| CedarDB (recursive CTEs) | **580 s** (9 m 40 s) | ≈ 189 |
+| ClickHouse (`arrayFold` + lambdas) | **17.8 s** | ~64 (6398 % CPU) |
+| CedarDB (recursive CTEs) | **580 s** (9 m 40 s) | ~92 |
 | DuckDB | cannot compile | — |
 
-With the default `optimize_and_compare_chain = 1` the ClickHouse render takes 754 s (12 m 34 s)
-— the setting saves ~99 s here, and ~30× at analysis-dominated small sizes (16 × 16: ~72 s →
-~2.3 s), with a byte-identical image. With the pathological analysis cost removed, the two
-engines are close on raw per-pixel throughput (≈ 213 vs ≈ 189 µs/pixel).
+Reaching 17.8 s took removing two artefacts that had nothing to do with ray-tracing throughput:
 
-So the honest takeaway is *not* "CedarDB beats ClickHouse at ray tracing" — on raw per-pixel
-throughput they are close. It is: (1) CedarDB *compiles* the scene that DuckDB cannot, and
-(2) once ClickHouse's `optimize_and_compare_chain` cost is removed, neither carries a large
-fixed analysis cost, so the comparison is genuine per-pixel compute — where the two are close
-(CedarDB ~1.13× faster at full resolution).
+1. **The `optimize_and_compare_chain` analysis blow-up** (above): `optimize_and_compare_chain = 0`,
+   ~30× faster analysis (16 × 16: ~72 s → ~2.3 s), identical image.
+2. **An `ORDER BY pixel` that pinned the render to one core.** The optimizer inlines the nested
+   subqueries, so the outer `ORDER BY` evaluates the heavy per-pixel ray-trace in the
+   single-stream post-sort projection (`MergingSortedTransform 62 → 1`) — the
+   embarrassingly-parallel compute ran serially (~100 % CPU = one core) for ~11 min. The TSV dump
+   is keyed by `idx` in `tools.py`, so it needs no ordering; dropping `ORDER BY` and not pinning
+   `max_threads` lets the per-pixel compute spread across all cores: **655 s → 17.8 s (~37×)** at
+   ~6400 % CPU. (A native PNG render still needs `ORDER BY` for scanline order.)
+
+So the honest takeaway flipped from the first measurement. With both artefacts gone, **ClickHouse
+is ~33× faster than CedarDB** (17.8 s vs 580 s): its vectorised, columnar execution dwarfs
+CedarDB's row-at-a-time recursive-CTE marches on raw per-pixel compute. CedarDB's distinction is
+not speed but that it *compiles* the scene at all — the recursive-CTE shape DuckDB cannot plan.
 
 **One genuine CedarDB engine bug** surfaced, reported upstream as
 [cedardb/issues#71](https://github.com/cedardb/issues/issues/71):

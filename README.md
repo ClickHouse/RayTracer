@@ -95,6 +95,8 @@ clickhouse local --queries-file scene.sql > scene.png
 - 🐛 **CedarDB**: works, but 33 times slower and with bugs: https://github.com/cedardb/issues/issues/71
 - ☠️ **DuckDB**: does not work, tried multiple ways - with arrays and recursive CTE, but it can't process even the smallest resolution image.
 
+See the [benchmark](/benchmark).
+
 ## Credits
 
 Inspired by Andrew Kensler's *business-card ray tracer* and Paul Heckbert's minimal ray

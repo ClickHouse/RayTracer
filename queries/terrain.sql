@@ -78,7 +78,9 @@ WITH
 SELECT
     clamp(pow(greatest(avg(col.1), 0.0), 1.0/2.2), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0), 1.0/2.2), 0.0, 1.0) AS g,
-    clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b
+    clamp(pow(greatest(avg(col.3), 0.0), 1.0/2.2), 0.0, 1.0) AS b,
+    pixel % 896      AS x,                          /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, 896) AS y
 FROM (
   SELECT pixel,
     arrayMap(t -> arrayMap(hp -> arrayMap(hgt -> arrayMap(nrm -> arrayMap(lit -> arrayMap(light -> arrayMap(ground -> arrayMap(fog -> if(t >= 1e8, sky(D), mix(ground, skyHorizon, fog)), [greatest(0.0, least(1.0, t/fogDist))])[1], [vmul3(terrainCol(hgt), light)])[1], [va(vm((0.42,0.54,0.80), 0.30 + 0.25*greatest(nrm.3,0.0)), vm(sunCol, 1.5*lit))])[1], [greatest(vd(nrm, sun), 0.0) * if(shadowed(va(hp, vm(nrm, 0.08))), 0.0, 1.0)])[1], [terrainN(hp.1, hp.2)])[1], [height(hp.1, hp.2)])[1], [va(O, vm(D, t))])[1], [march(O, D)])[1] AS col
@@ -93,7 +95,7 @@ FROM (
   )
 )
 GROUP BY pixel
-ORDER BY pixel
 SETTINGS output_format_image_width = 896, output_format_image_height = 504,
-         max_block_size = 2048, max_threads = 24
+         max_block_size = 2048,
+         optimize_and_compare_chain = 0
 FORMAT PNG

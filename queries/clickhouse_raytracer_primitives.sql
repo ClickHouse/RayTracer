@@ -21,7 +21,12 @@
 --
 --  The light transport is an arrayFold over range(maxDepth) inside each row, so
 --  it parallelizes across cores; pixels stream to ClickHouse's PNG format.
---  max_block_size/max_threads are capped to bound peak memory.
+--  max_block_size is capped to bound peak memory; threads are left unset so the
+--  render spreads across all cores. optimize_and_compare_chain = 0 avoids a costly
+--  analyzer pass on the deeply-nested comparison tree. The output carries explicit
+--  PNG 'x'/'y' coordinate columns (pixel % W, intDiv(pixel, W)), so the rows need
+--  no ORDER BY -- the heavy per-pixel projection stays fully parallel and the PNG
+--  writer places each pixel by its coordinates.
 --
 --  Run it:
 --      clickhouse local --queries-file clickhouse_raytracer_primitives.sql > clickhouse.png
@@ -128,7 +133,9 @@ WITH
 SELECT
     clamp(pow(greatest(avg(col.1), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS r,
     clamp(pow(greatest(avg(col.2), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS g,
-    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b
+    clamp(pow(greatest(avg(col.3), 0.0) * exposure, 1.0 / gamma), 0.0, 1.0) AS b,
+    pixel % 1280      AS x,                         /* explicit PNG coordinates: no ORDER BY needed */
+    intDiv(pixel, 1280) AS y
 FROM (
   SELECT pixel, va(st.4, if(st.5 > 0.5, vm(sky(st.2), st.3), (0.0,0.0,0.0))) AS col
   FROM (
@@ -150,7 +157,7 @@ FROM (
   )
 )
 GROUP BY pixel
-ORDER BY pixel
 SETTINGS output_format_image_width = 1280, output_format_image_height = 512,
-         max_block_size = 2048, max_threads = 24
+         max_block_size = 2048,
+         optimize_and_compare_chain = 0
 FORMAT PNG

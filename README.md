@@ -21,8 +21,11 @@ See also:
 The whole renderer lives in one query:
 
 - **Pixels are rows.** `numbers_mt(width * height * samples)` produces one row per
-  `(pixel, sample)`; the output columns `r, g, b` (in `[0, 1]`) are written to the `PNG`
-  output format in scanline order, and samples are averaged with `GROUP BY pixel`.
+  `(pixel, sample)`; samples are averaged with `GROUP BY pixel`, and the output columns
+  `r, g, b` (in `[0, 1]`) plus explicit `x, y` coordinate columns (`pixel % width`,
+  `intDiv(pixel, width)`) are written to the `PNG` output format. The explicit coordinates let
+  the writer place each pixel by its position, so the rows need no `ORDER BY` and the heavy
+  per-pixel work stays parallel across all cores.
 - **3D math on tuples.** Vectors are `Tuple(Float64, Float64, Float64)`; `dotProduct`,
   `L2Normalize`, `tuplePlus`, `tupleMultiplyByNumber`, … do the linear algebra, wrapped in
   short lambda aliases (`va`, `vs`, `vm`, `vd`, `vn`, `vc`, `vref`).

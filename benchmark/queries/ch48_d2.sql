@@ -154,6 +154,5 @@ FROM (
     )
   )
 )
-ORDER BY pixel
-SETTINGS max_block_size = 2048, max_threads = 24
+SETTINGS optimize_and_compare_chain = 0, max_block_size = 2048
 FORMAT TSV

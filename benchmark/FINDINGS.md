@@ -177,7 +177,10 @@ Reaching 17.8 s took removing two artefacts that had nothing to do with ray-trac
    embarrassingly-parallel compute ran serially (~100 % CPU = one core) for ~11 min. The TSV dump
    is keyed by `idx` in `tools.py`, so it needs no ordering; dropping `ORDER BY` and not pinning
    `max_threads` lets the per-pixel compute spread across all cores: **655 s → 17.8 s (~37×)** at
-   ~6400 % CPU. (A native PNG render still needs `ORDER BY` for scanline order.)
+   ~6400 % CPU. A native PNG render does not need `ORDER BY` either: the `PNG` format accepts
+   explicit `x`/`y` coordinate columns (`pixel % W`, `intDiv(pixel, W)`), so the writer places each
+   pixel by its position and the rows can stream out of order — keeping the projection parallel
+   while still producing a correctly-laid-out image.
 
 So the honest takeaway flipped from the first measurement. With both artefacts gone, **ClickHouse
 is ~33× faster than CedarDB** (17.8 s vs 580 s): its vectorised, columnar execution dwarfs

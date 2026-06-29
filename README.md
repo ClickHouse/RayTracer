@@ -61,6 +61,12 @@ crossing, so it is both fast and free of step-banding. It is shaded with a heigh
 
 ## Gallery
 
+**ClickBulb** — a desk lamp built entirely from spheres hops in, leaps behind the banner, rakes
+its light through the letter gaps, then pokes its head through to peer at you. Every frame is the
+same ClickHouse SQL query, run once per frame ([full-quality video](images/clickbulb_hd.mp4)).
+
+[![ClickBulb — a sphere-built desk lamp animation](images/clickbulb.gif)](images/clickbulb_hd.mp4)
+
 | | |
 |---|---|
 | ![Pixar homage](images/pixar_homage.png) | ![CSG primitives](images/csg_primitives.png) |

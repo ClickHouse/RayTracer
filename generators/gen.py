@@ -6,24 +6,31 @@ business-card ray tracer) and emits it via the PNG output format.
 The light transport is expressed as a WITH RECURSIVE CTE: each iteration
 advances every live ray by one bounce, so the query text stays a single
 stage regardless of the maximum bounce depth."""
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import font
 
 # ---- Tunable parameters -------------------------------------------------
 W       = int(sys.argv[1]) if len(sys.argv) > 1 else 320   # image width
 H       = int(sys.argv[2]) if len(sys.argv) > 2 else 128   # image height
 SAMPLES = int(sys.argv[3]) if len(sys.argv) > 3 else 4     # samples per pixel
 DEPTH   = int(sys.argv[4]) if len(sys.argv) > 4 else 4     # max ray bounces
+TEXT    = sys.argv[5] if len(sys.argv) > 5 else "ClickHouse"  # word(s) to render
 
-# ---- The "ClickHouse" banner (7 rows, '#' = a sphere) -------------------
-BANNER = [
-    '.###..##...#.......#....#...#....................',
-    '#...#..#...........#....#...#....................',
-    '#......#...#...###.#.##.#...#..##..#..#..###..##.',
-    '#......#...#..#....#.#..#####.#..#.#..#.#....#..#',
-    '#......#...#..#....##...#...#.#..#.#..#..##..####',
-    '#...#..#...#..#....#.#..#...#.#..#.#..#....#.#...',
-    '.###...##..#...###.#..#.#...#..##...###.###...###',
-]
+# ---- Build the banner (7 rows, '#' = a sphere) from the text ------------
+BANNER, bannerW = font.banner(TEXT)
+bannerH = font.ROWS
+
+# Recenter the camera / light / hero sphere on the banner's midpoint so any
+# length of text stays framed. The original "ClickHouse" banner is 49 wide,
+# whose center (x = 24) the scene was hand-tuned around, so dx = 0 there and
+# the default render is unchanged.
+cx = (bannerW - 1) / 2.0
+dx = cx - 24.0
+def fx(x):
+    return repr(round(x + dx, 4))   # shift an x-coordinate and format it
 
 def sql_str_array(rows):
     return "[" + ", ".join("'" + r + "'" for r in rows) + "]"
@@ -32,20 +39,20 @@ def sql_str_array(rows):
 PRELUDE = f"""WITH RECURSIVE
     /* ----- scene / camera constants ----- */
     {sql_str_array(BANNER)} AS banner,
-    49        AS bannerW,
-    7         AS bannerH,
+    {bannerW}        AS bannerW,
+    {bannerH}         AS bannerH,
     1.0       AS spacing,         /* grid spacing between sphere centers */
     0.92      AS radius,          /* sphere radius (overlap -> solid strokes) */
     3.0       AS z0,              /* world z of the lowest text row */
-    (24.0, 0.0, 6.0)    AS target,        /* center of the text block */
-    (24.0, -42.0, 12.0) AS eye,           /* camera position (in front, -y) */
+    ({fx(24.0)}, 0.0, 6.0)    AS target,        /* center of the text block */
+    ({fx(24.0)}, -42.0, 12.0) AS eye,           /* camera position (in front, -y) */
     34.0      AS fovDeg,          /* vertical field of view, degrees */
     getSetting('output_format_image_width')::UInt64  AS W,
     getSetting('output_format_image_height')::UInt64 AS H,
     W::Float64     AS imgW,
     H::Float64     AS imgH,
     {DEPTH}   AS maxDepth,        /* number of ray-trace bounces */
-    (9.0, -30.0, 52.0)  AS lightPos,      /* area-light center */
+    ({fx(9.0)}, -30.0, 52.0)  AS lightPos,      /* area-light center */
     5.0       AS lightR,          /* area-light radius (soft shadows) */
     (0.42, 0.60, 0.95)  AS skyColor,      /* base sky tint */
     (0.66, 0.78, 0.96)  AS hazeColor,     /* horizon haze the floor fades into */
@@ -62,9 +69,9 @@ PRELUDE = f"""WITH RECURSIVE
 
     /* ----- a Constructive Solid Geometry hero object: a chrome sphere with a
             spherical cavity carved out of it (solid = sphere csgA MINUS sphere csgB) ----- */
-    (24.0, 12.0, 17.5)  AS csgA,          /* big sphere center (floats above the word) */
+    ({fx(24.0)}, 12.0, 17.5)  AS csgA,          /* big sphere center (floats above the word) */
     6.0       AS csgAr,           /* big sphere radius */
-    (24.0, 6.6, 17.0)   AS csgB,          /* cutter sphere center (faces the camera) */
+    ({fx(24.0)}, 6.6, 17.0)   AS csgB,          /* cutter sphere center (faces the camera) */
     4.4       AS csgBr,           /* cutter sphere radius */
     1.15      AS exposure,
     2.2       AS gamma,

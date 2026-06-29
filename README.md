@@ -61,6 +61,12 @@ crossing, so it is both fast and free of step-banding. It is shaded with a heigh
 
 ## Gallery
 
+**ClickBulb** — a desk lamp built entirely from spheres hops in, leaps behind the banner, rakes
+its light through the letter gaps, then pokes its head through to peer at you. Every frame is the
+same ClickHouse SQL query, run once per frame ([full-quality video](images/clickbulb_hd.mp4)).
+
+[![ClickBulb — a sphere-built desk lamp animation](images/clickbulb.gif)](images/clickbulb_hd.mp4)
+
 | | |
 |---|---|
 | ![Pixar homage](images/pixar_homage.png) | ![CSG primitives](images/csg_primitives.png) |
@@ -97,6 +103,23 @@ python3 generators/gen_combined.py 2560 1200 8 2 > scene.sql   # depth 2; W/H/sa
 clickhouse local --output_format_image_width 2560 --output_format_image_height 1200 \
                  --param_SAMPLES 8 --queries-file scene.sql > scene.png
 ```
+
+### Rendering arbitrary text
+
+The sphere-banner generators ([`gen.py`](generators/gen.py) and the faster
+[`gen_fold.py`](generators/gen_fold.py)) take an optional 5th argument: the text to render. It is
+laid out from the 7-row bitmap font in [`generators/font.py`](generators/font.py) (uppercase A–Z,
+digits, and common punctuation; the original mixed-case "ClickHouse" glyphs are preserved, so the
+default render is unchanged), and the camera, light, and chrome sphere are recentered on the
+banner automatically.
+
+```bash
+python3 generators/gen_fold.py 640 256 16 4 "HELLO SQL" > hello.sql
+clickhouse local --output_format_image_width 640 --output_format_image_height 256 \
+                 --param_SAMPLES 16 --queries-file hello.sql > hello.png
+```
+
+Preview a banner as ASCII art without rendering: `python3 generators/font.py "HELLO SQL"`.
 
 ## Trying with other databases
 

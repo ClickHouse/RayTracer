@@ -11,22 +11,27 @@ Since ClickHouse has no immediately-applied lambdas, each per-bounce
 intermediate that is reused (or expensive) is bound once by passing it as a
 parameter down a small tower of helper lambdas (b1..b7), mirroring exactly the
 subquery levels the recursive version used."""
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import font
 
 W       = int(sys.argv[1]) if len(sys.argv) > 1 else 320
 H       = int(sys.argv[2]) if len(sys.argv) > 2 else 128
 SAMPLES = int(sys.argv[3]) if len(sys.argv) > 3 else 4
 DEPTH   = int(sys.argv[4]) if len(sys.argv) > 4 else 4
+TEXT    = sys.argv[5] if len(sys.argv) > 5 else "ClickHouse"
 
-BANNER = [
-    '.###..##...#.......#....#...#....................',
-    '#...#..#...........#....#...#....................',
-    '#......#...#...###.#.##.#...#..##..#..#..###..##.',
-    '#......#...#..#....#.#..#####.#..#.#..#.#....#..#',
-    '#......#...#..#....##...#...#.#..#.#..#..##..####',
-    '#...#..#...#..#....#.#..#...#.#..#.#..#....#.#...',
-    '.###...##..#...###.#..#.#...#..##...###.###...###',
-]
+# Build the banner from the text and recenter the scene on its midpoint; the
+# default "ClickHouse" banner is 49 wide (center x = 24), so dx = 0 there.
+BANNER, bannerW = font.banner(TEXT)
+bannerH = font.ROWS
+cx = (bannerW - 1) / 2.0
+dx = cx - 24.0
+def fx(x):
+    return repr(round(x + dx, 4))
+
 ST = "Tuple(Tuple(Float64,Float64,Float64), Tuple(Float64,Float64,Float64), Float64, Tuple(Float64,Float64,Float64), Float64)"
 
 def arr(rows):
@@ -84,16 +89,16 @@ ONE_BOUNCE = lets(_BIND, _BODY)
 
 PRELUDE = f"""WITH
     {arr(BANNER)} AS banner,
-    49 AS bannerW, 7 AS bannerH,
+    {bannerW} AS bannerW, {bannerH} AS bannerH,
     1.0 AS spacing, 0.92 AS radius, 3.0 AS z0,
-    (24.0, 0.0, 6.0)    AS target,
-    (24.0, -42.0, 12.0) AS eye,
+    ({fx(24.0)}, 0.0, 6.0)    AS target,
+    ({fx(24.0)}, -42.0, 12.0) AS eye,
     34.0 AS fovDeg,
     getSetting('output_format_image_width')::UInt64  AS W,
     getSetting('output_format_image_height')::UInt64 AS H,
     W::Float64 AS imgW, H::Float64 AS imgH,
     {DEPTH} AS maxDepth,
-    (9.0, -30.0, 52.0)  AS lightPos,
+    ({fx(9.0)}, -30.0, 52.0)  AS lightPos,
     5.0 AS lightR,
     (0.42, 0.60, 0.95)  AS skyColor,
     (0.66, 0.78, 0.96)  AS hazeColor,
@@ -103,8 +108,8 @@ PRELUDE = f"""WITH
     5.0 AS tile, 0.30 AS floorAmb, 0.85 AS floorDiff,
     (1.0, 1.0, 1.0)     AS specColor,
     60.0 AS shininess, 0.72 AS reflect_k,
-    (24.0, 12.0, 17.5)  AS csgA, 6.0 AS csgAr,
-    (24.0, 6.6, 17.0)   AS csgB, 4.4 AS csgBr,
+    ({fx(24.0)}, 12.0, 17.5)  AS csgA, 6.0 AS csgAr,
+    ({fx(24.0)}, 6.6, 17.0)   AS csgB, 4.4 AS csgBr,
     1.15 AS exposure, 2.2 AS gamma, 0.002 AS eps,
 
     ((a, b) -> tuplePlus(a, b))                                   AS va,

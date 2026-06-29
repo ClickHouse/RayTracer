@@ -98,6 +98,23 @@ clickhouse local --output_format_image_width 2560 --output_format_image_height 1
                  --param_SAMPLES 8 --queries-file scene.sql > scene.png
 ```
 
+### Rendering arbitrary text
+
+The sphere-banner generators ([`gen.py`](generators/gen.py) and the faster
+[`gen_fold.py`](generators/gen_fold.py)) take an optional 5th argument: the text to render. It is
+laid out from the 7-row bitmap font in [`generators/font.py`](generators/font.py) (uppercase A–Z,
+digits, and common punctuation; the original mixed-case "ClickHouse" glyphs are preserved, so the
+default render is unchanged), and the camera, light, and chrome sphere are recentered on the
+banner automatically.
+
+```bash
+python3 generators/gen_fold.py 640 256 16 4 "HELLO SQL" > hello.sql
+clickhouse local --output_format_image_width 640 --output_format_image_height 256 \
+                 --param_SAMPLES 16 --queries-file hello.sql > hello.png
+```
+
+Preview a banner as ASCII art without rendering: `python3 generators/font.py "HELLO SQL"`.
+
 ## Trying with other databases
 
 - 🐛 **CedarDB**: works, but 33 times slower and with bugs: https://github.com/cedardb/issues/issues/71

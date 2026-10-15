@@ -8,15 +8,20 @@ CedarDB has no SQL lambdas / higher-order array functions, so the port is
   leaf vector / scalar helpers    -> CREATE FUNCTION ... LANGUAGE sql AS 'SELECT expr'
                                      (CedarDB >= v2026-10-08 rejects bare-expression
                                       bodies; v2026-08-13 and older reject SELECT bodies)
-  intersection math               -> LATERAL "let" chains in the main query
-                                     (CedarDB forbids subqueries inside function
-                                      bodies, but LATERAL works in the main query)
+  intersection math               -> sphere / cylinder / tori helpers are SQL
+                                     functions shared by primary and shadow rays;
+                                     a chain of functions passes intermediates as
+                                     parameters ("let"), since CedarDB forbids
+                                     subqueries inside function bodies. The
+                                     one-off planet uses a LATERAL "let" chain.
   arrayFold ray-march             -> WITH RECURSIVE (all rays march in lockstep)
   arrayFold bounce loop           -> the bounce block is emitted once per depth,
                                      each as its own set of CTEs (a recursive CTE
                                      cannot be nested in another, so depth is
                                      unrolled; marches are relations either way)
-  geometry list                   -> rows (VALUES); nearest hit via window min
+  geometry list                   -> rows (VALUES); nearest hit via window min,
+                                     shadow occlusion via bool_or (a correlated
+                                     EXISTS here is ~25% slower overall)
   fixed-step terrain shadow loop  -> set-based join over generate_series(0,23)
   cityHash/intHash                -> the same portable LCG hash (pure arithmetic)
 
@@ -103,12 +108,14 @@ SPHc = sph[0]
 # ====================================================================
 #  one bounce: consume ray CTE `IN` (idx,o,d,thr,acc,alive), emit `rays_{S}`
 # ====================================================================
+SPH_ARGS = f"{arr(SPHc[:3])}, {f(SPHc[3]*SPHc[3])}"
+
 def emit_bounce(S, IN):
     return f"""
 -- ============================ bounce {S} ============================
 in_{S} AS (SELECT idx, o, d, thr, acc FROM {IN} WHERE alive > 0.5),
 
--- terrain height-field march (lockstep; per-step expressions inlined)
+-- terrain height-field march (lockstep)
 m_{S} AS (
   SELECT idx, o, d,
          CASE WHEN d[3] < -0.001 THEN greatest(0.05, (o[3]-1.55)/(-d[3])) ELSE 0.05 END AS t,
@@ -129,80 +136,33 @@ m_{S} AS (
 ),
 terr_{S} AS (SELECT idx, min(CASE WHEN done = 1 THEN result ELSE 1e9 END) AS tTerr FROM m_{S} GROUP BY idx),
 
--- tori sphere-trace march (48 accumulate steps, like DuckDB)
+-- tori sphere-trace march (48 fixed steps)
 tmar_{S} AS (
   SELECT idx, o, d, 0.02::double precision AS t, 0 AS iter FROM in_{S}
   UNION ALL
-  SELECT idx, o, d, t + toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t), iter + 1
-  FROM tmar_{S} WHERE iter < 48
+  SELECT idx, o, d, t + toriAt(o, d, t), iter + 1 FROM tmar_{S} WHERE iter < 48
 ),
-tori_hit_{S} AS (
-  SELECT idx, tfin, CASE WHEN sdf < 0.01 AND tfin > 0.002 AND tfin < 260.0 THEN tfin ELSE 1e9 END AS tTorus
-  FROM (SELECT t1.idx, t1.t AS tfin,
-               toriSDF3(t1.o[1]+t1.d[1]*t1.t, t1.o[2]+t1.d[2]*t1.t, t1.o[3]+t1.d[3]*t1.t) AS sdf
-        FROM tmar_{S} t1 WHERE t1.iter = 48) z
-),
-tori_nrm_{S} AS (
-  SELECT h.idx, h.tTorus,
-         vn(ARRAY[toriSDF3(hx+0.0009,hy,hz)-toriSDF3(hx-0.0009,hy,hz),
-                  toriSDF3(hx,hy+0.0009,hz)-toriSDF3(hx,hy-0.0009,hz),
-                  toriSDF3(hx,hy,hz+0.0009)-toriSDF3(hx,hy,hz-0.0009)]) AS nTorus
-  FROM tori_hit_{S} h JOIN in_{S} p USING (idx),
-       LATERAL (SELECT p.o[1]+p.d[1]*least(h.tTorus,5000.0) AS hx,
-                       p.o[2]+p.d[2]*least(h.tTorus,5000.0) AS hy,
-                       p.o[3]+p.d[3]*least(h.tTorus,5000.0) AS hz) g
+tori_{S} AS (
+  SELECT idx, tTorus, toriN(pt(o, d, least(tTorus, 5000.0))) AS nTorus
+  FROM (SELECT idx, o, d, CASE WHEN toriAt(o, d, t) < 0.01 AND t > 0.002 AND t < 260.0 THEN t ELSE 1e9 END AS tTorus
+        FROM tmar_{S} WHERE iter = 48) z
 ),
 
--- analytic cylinders (rod = body + 2 disk caps), nearest per pixel
-cyl_raw_{S} AS (
-  SELECT p.idx, least(tBody, least(tCapA, tCapB)) AS t,
-         mix(mix(vn(l1.ba), vn(vm(l1.ba,-1.0)),
-                 CASE WHEN least(tBody,least(tCapA,tCapB)) = tCapA THEN 1.0 ELSE 0.0 END),
-             vn(vs(va(p.o, vm(p.d, least(tBody,least(tCapA,tCapB)))),
-                   va(c.a, vm(l1.ba, vd(vs(va(p.o, vm(p.d, least(tBody,least(tCapA,tCapB)))), c.a), l1.ba)/l1.baba)))),
-             CASE WHEN least(tBody,least(tCapA,tCapB)) = tBody THEN 1.0 ELSE 0.0 END) AS n
-  FROM in_{S} p CROSS JOIN cyls c
-  , LATERAL (SELECT vs(c.b,c.a) AS ba, vs(p.o,c.a) AS oa) l0
-  , LATERAL (SELECT l0.ba AS ba, l0.oa AS oa, vd(l0.ba,l0.ba) AS baba, vd(l0.ba,p.d) AS bard,
-                    vd(l0.ba,l0.oa) AS baoa, vd(p.d,l0.oa) AS doa, vd(l0.oa,l0.oa) AS oaoa) l1
-  , LATERAL (SELECT l1.baba - l1.bard*l1.bard AS aa, l1.baba*l1.doa - l1.baoa*l1.bard AS bb,
-                    l1.baba*l1.oaoa - l1.baoa*l1.baoa - c.r*c.r*l1.baba AS cc) l2
-  , LATERAL (SELECT l2.bb*l2.bb - l2.aa*l2.cc AS hh) l3
-  , LATERAL (SELECT (-l2.bb - sqrt(greatest(l3.hh,0.0)))/l2.aa AS tb) l4
-  , LATERAL (SELECT CASE WHEN l3.hh >= 0.0 AND l2.aa > 1e-9 AND l4.tb > 0.002
-                              AND (l1.baoa + l4.tb*l1.bard) > 0.0 AND (l1.baoa + l4.tb*l1.bard) < l1.baba
-                         THEN l4.tb ELSE 1e9 END AS tBody) l5
-  , LATERAL (SELECT vd(l1.ba, p.d) AS den) l6
-  , LATERAL (SELECT vd(l1.ba, vs(c.a, p.o))/CASE WHEN abs(l6.den)<1e-12 THEN 1e-12 ELSE l6.den END AS taA,
-                    vd(l1.ba, vs(c.b, p.o))/CASE WHEN abs(l6.den)<1e-12 THEN 1e-12 ELSE l6.den END AS taB) l7
-  , LATERAL (SELECT vs(va(p.o, vm(p.d, l7.taA)), c.a) AS dA, vs(va(p.o, vm(p.d, l7.taB)), c.b) AS dB) l8
-  , LATERAL (SELECT CASE WHEN abs(l6.den)>1e-9 AND l7.taA>0.002 AND vd(l8.dA,l8.dA)<=c.r*c.r THEN l7.taA ELSE 1e9 END AS tCapA,
-                    CASE WHEN abs(l6.den)>1e-9 AND l7.taB>0.002 AND vd(l8.dB,l8.dB)<=c.r*c.r THEN l7.taB ELSE 1e9 END AS tCapB) l9
-),
-cyl_hit_{S} AS (
-  SELECT idx, t AS tCyl, n AS nCyl FROM (
-    SELECT idx, t, n, row_number() OVER (PARTITION BY idx ORDER BY t) AS rn FROM cyl_raw_{S}
-  ) z WHERE rn = 1
-),
-
--- i-dot sphere
-sph_hit_{S} AS (
-  SELECT p.idx,
-         CASE WHEN disc > 0.0 AND tnear > 0.002 THEN tnear ELSE 1e9 END AS tSph,
-         vn(vs(va(p.o, vm(p.d, CASE WHEN disc > 0.0 AND tnear > 0.002 THEN tnear ELSE 1e9 END)), {arr(SPHc[:3])})) AS nSph
-  FROM in_{S} p
-  , LATERAL (SELECT vs(p.o, {arr(SPHc[:3])}) AS oc) s0
-  , LATERAL (SELECT vd(s0.oc, p.d) AS bb, vd(s0.oc, s0.oc) - {f(SPHc[3]*SPHc[3])} AS cc) s1
-  , LATERAL (SELECT s1.bb*s1.bb - s1.cc AS disc) s2
-  , LATERAL (SELECT -s1.bb - sqrt(greatest(s2.disc,0.0)) AS tnear) s3
+-- nearest cylinder per pixel
+cyl_{S} AS (
+  SELECT idx, t AS tCyl, cylN(o, d, t, a, b, r) AS nCyl
+  FROM (SELECT *, row_number() OVER (PARTITION BY idx ORDER BY t) AS rn
+        FROM (SELECT p.idx, p.o, p.d, c.a, c.b, c.r, cylT(p.o, p.d, c.a, c.b, c.r) AS t
+              FROM in_{S} p CROSS JOIN cyls c) y) z
+  WHERE rn = 1
 ),
 
 -- planet: sphere csgA with a spherical cavity csgB
 planet_{S} AS (
   SELECT p.idx, least(cEnter, cCav) AS tC,
-         mix(vn(vs({arr(CSGB)}, va(p.o, vm(p.d, least(cEnter,cCav))))),
-             vn(vs(va(p.o, vm(p.d, least(cEnter,cCav))), {arr(CSGA)})),
-             CASE WHEN cEnter <= cCav THEN 1.0 ELSE 0.0 END) AS nC
+         mix(vn(vs({arr(CSGB)}, pt(p.o, p.d, least(cEnter,cCav)))),
+             vn(vs(pt(p.o, p.d, least(cEnter,cCav)), {arr(CSGA)})),
+             f01(cEnter <= cCav)) AS nC
   FROM in_{S} p
   , LATERAL (SELECT vs(p.o, {arr(CSGA)}) AS ocA, vs(p.o, {arr(CSGB)}) AS ocB) q0
   , LATERAL (SELECT vd(q0.ocA,p.d) AS bA, vd(q0.ocA,q0.ocA)-{f(RA*RA)} AS cA,
@@ -218,34 +178,30 @@ planet_{S} AS (
                          THEN q3.bFar ELSE 1e9 END AS cCav) q4
 ),
 
--- combine nearest hit; derive normals, shadow origin, light + reflect dirs
+-- nearest hit (+ i-dot sphere); surface normal, shadow ray, reflected ray
 comb_{S} AS (
-  SELECT p.idx, p.o, p.d, p.thr, p.acc,
-         a2.tHit AS tHit, a1.tM AS tM, a0.tLet AS tLet, a2.tTerr AS tTerr,
-         a3.isMirror AS isMirror, a3.isTerr AS isTerr, a3.isMiss AS isMiss,
-         a3.hp AS hp, a3.sn AS sn, a4.tN AS tN, a4.rdir AS rdir,
-         a5.shOrig AS shOrig, a4.ldir AS ldir, a4.distL AS distL
+  SELECT p.idx, p.o, p.d, p.thr, p.acc, h.tHit, h.isMirror, h.isTerr, h.isMiss, h.hp,
+         n.tN, n.rdir, n.ldir, n.distL, va(h.hp, vm(mix(h.sn, n.tN, h.isTerr), 0.02)) AS shOrig
   FROM in_{S} p
-  JOIN tori_hit_{S} th USING (idx) JOIN tori_nrm_{S} tn USING (idx)
-  JOIN cyl_hit_{S} ch USING (idx) JOIN sph_hit_{S} sh USING (idx)
+  JOIN tori_{S} th USING (idx) JOIN cyl_{S} ch USING (idx)
   JOIN planet_{S} pl USING (idx) JOIN terr_{S} tr USING (idx)
+  , LATERAL (SELECT sphT(p.o, p.d, {SPH_ARGS}) AS tSph) sh
   , LATERAL (SELECT least(ch.tCyl, least(sh.tSph, th.tTorus)) AS tLet) a0
   , LATERAL (SELECT least(a0.tLet, pl.tC) AS tM) a1
-  , LATERAL (SELECT least(a1.tM, tr.tTerr) AS tHit, tr.tTerr AS tTerr) a2
-  , LATERAL (SELECT va(p.o, vm(p.d, least(a2.tHit,5000.0))) AS hp,
-                    CASE WHEN a1.tM < tr.tTerr AND a1.tM < 1e8 THEN 1.0 ELSE 0.0 END AS isMirror,
-                    CASE WHEN tr.tTerr <= a1.tM AND tr.tTerr < 1e8 THEN 1.0 ELSE 0.0 END AS isTerr,
-                    CASE WHEN a1.tM >= 1e8 AND tr.tTerr >= 1e8 THEN 1.0 ELSE 0.0 END AS isMiss,
-                    mix(mix(mix(sh.nSph, ch.nCyl, CASE WHEN ch.tCyl<=sh.tSph THEN 1.0 ELSE 0.0 END),
-                            tn.nTorus, CASE WHEN th.tTorus<=ch.tCyl AND th.tTorus<=sh.tSph THEN 1.0 ELSE 0.0 END),
-                        pl.nC, CASE WHEN pl.tC<a0.tLet THEN 1.0 ELSE 0.0 END) AS sn) a3
-  , LATERAL (SELECT terrN(a3.hp[1], a3.hp[2]) AS tN, vref(p.d, a3.sn) AS rdir,
-                    vn(vs({arr(LIGHT)}, a3.hp)) AS ldir,
-                    sqrt(vd(vs({arr(LIGHT)}, a3.hp), vs({arr(LIGHT)}, a3.hp))) AS distL) a4
-  , LATERAL (SELECT va(a3.hp, vm(mix(a3.sn, a4.tN, a3.isTerr), 0.02)) AS shOrig) a5
+  , LATERAL (SELECT least(a1.tM, tr.tTerr) AS tHit,
+                    pt(p.o, p.d, least(least(a1.tM, tr.tTerr), 5000.0)) AS hp,
+                    f01(a1.tM < tr.tTerr AND a1.tM < 1e8) AS isMirror,
+                    f01(tr.tTerr <= a1.tM AND tr.tTerr < 1e8) AS isTerr,
+                    f01(a1.tM >= 1e8 AND tr.tTerr >= 1e8) AS isMiss,
+                    mix(mix(mix(vn(vs(pt(p.o, p.d, sh.tSph), {arr(SPHc[:3])})), ch.nCyl, f01(ch.tCyl<=sh.tSph)),
+                            th.nTorus, f01(th.tTorus<=ch.tCyl AND th.tTorus<=sh.tSph)),
+                        pl.nC, f01(pl.tC<a0.tLet)) AS sn) h
+  , LATERAL (SELECT terrN(h.hp[1], h.hp[2]) AS tN, vref(p.d, h.sn) AS rdir,
+                    vn(vs({arr(LIGHT)}, h.hp)) AS ldir,
+                    sqrt(vd(vs({arr(LIGHT)}, h.hp), vs({arr(LIGHT)}, h.hp))) AS distL) n
 ),
 
--- shadow: terrain (fixed 24-step set-based), analytic cyl/sph, tori march
+-- shadow ray: terrain (24 fixed steps), cylinders, tori (march); sphere in shade_{S}
 sterr_{S} AS (
   SELECT cb.idx, bool_or(
            (0.3 + i*0.6) < cb.distL-0.05 AND
@@ -255,63 +211,33 @@ sterr_{S} AS (
   FROM comb_{S} cb CROSS JOIN generate_series(0,23) i
   GROUP BY cb.idx
 ),
-socc_{S} AS (
-  SELECT cb.idx, bool_or(least(tBody, least(tCapA, tCapB)) < cb.distL-0.05) AS occ
-  FROM comb_{S} cb CROSS JOIN cyls c
-  , LATERAL (SELECT vs(c.b,c.a) AS ba, vs(cb.shOrig,c.a) AS oa) l0
-  , LATERAL (SELECT l0.ba AS ba, vd(l0.ba,l0.ba) AS baba, vd(l0.ba,cb.ldir) AS bard,
-                    vd(l0.ba,l0.oa) AS baoa, vd(cb.ldir,l0.oa) AS doa, vd(l0.oa,l0.oa) AS oaoa) l1
-  , LATERAL (SELECT l1.baba-l1.bard*l1.bard AS aa, l1.baba*l1.doa-l1.baoa*l1.bard AS bb,
-                    l1.baba*l1.oaoa-l1.baoa*l1.baoa-c.r*c.r*l1.baba AS cc) l2
-  , LATERAL (SELECT l2.bb*l2.bb-l2.aa*l2.cc AS hh) l3
-  , LATERAL (SELECT (-l2.bb-sqrt(greatest(l3.hh,0.0)))/l2.aa AS tb) l4
-  , LATERAL (SELECT CASE WHEN l3.hh>=0.0 AND l2.aa>1e-9 AND l4.tb>0.002
-                              AND (l1.baoa+l4.tb*l1.bard)>0.0 AND (l1.baoa+l4.tb*l1.bard)<l1.baba
-                         THEN l4.tb ELSE 1e9 END AS tBody) l5
-  , LATERAL (SELECT vd(l1.ba,cb.ldir) AS den) l6
-  , LATERAL (SELECT vd(l1.ba,vs(c.a,cb.shOrig))/CASE WHEN abs(l6.den)<1e-12 THEN 1e-12 ELSE l6.den END AS taA,
-                    vd(l1.ba,vs(c.b,cb.shOrig))/CASE WHEN abs(l6.den)<1e-12 THEN 1e-12 ELSE l6.den END AS taB) l7
-  , LATERAL (SELECT vs(va(cb.shOrig,vm(cb.ldir,l7.taA)),c.a) AS dA, vs(va(cb.shOrig,vm(cb.ldir,l7.taB)),c.b) AS dB) l8
-  , LATERAL (SELECT CASE WHEN abs(l6.den)>1e-9 AND l7.taA>0.002 AND vd(l8.dA,l8.dA)<=c.r*c.r THEN l7.taA ELSE 1e9 END AS tCapA,
-                    CASE WHEN abs(l6.den)>1e-9 AND l7.taB>0.002 AND vd(l8.dB,l8.dB)<=c.r*c.r THEN l7.taB ELSE 1e9 END AS tCapB) l9
-  GROUP BY cb.idx
-),
-soccs_{S} AS (
-  SELECT cb.idx, CASE WHEN disc>0.0 AND tnear>0.002 AND tnear < cb.distL-0.05 THEN true ELSE false END AS occ
-  FROM comb_{S} cb
-  , LATERAL (SELECT vs(cb.shOrig, {arr(SPHc[:3])}) AS oc) s0
-  , LATERAL (SELECT vd(s0.oc,cb.ldir) AS bb, vd(s0.oc,s0.oc)-{f(SPHc[3]*SPHc[3])} AS cc) s1
-  , LATERAL (SELECT s1.bb*s1.bb-s1.cc AS disc) s2
-  , LATERAL (SELECT -s1.bb-sqrt(greatest(s2.disc,0.0)) AS tnear) s3
-),
 stmar_{S} AS (
   SELECT idx, shOrig AS o, ldir AS d, distL, 0.02::double precision AS t, 0 AS iter FROM comb_{S}
   UNION ALL
-  SELECT idx, o, d, distL, t + toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t), iter + 1
-  FROM stmar_{S} WHERE iter < 48
+  SELECT idx, o, d, distL, t + toriAt(o, d, t), iter + 1 FROM stmar_{S} WHERE iter < 48
+),
+socc_{S} AS (
+  SELECT cb.idx, bool_or(cylT(cb.shOrig, cb.ldir, c.a, c.b, c.r) < cb.distL-0.05) AS occ
+  FROM comb_{S} cb CROSS JOIN cyls c GROUP BY cb.idx
 ),
 stori_{S} AS (
-  SELECT idx, CASE WHEN sdf < 0.01 AND tfin > 0.002 AND tfin < 260.0 AND tfin < distL-0.05 THEN true ELSE false END AS occ
-  FROM (SELECT idx, t AS tfin, distL, toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t) AS sdf
-        FROM stmar_{S} WHERE iter = 48) z
+  SELECT idx, toriAt(o, d, t) < 0.01 AND t > 0.002 AND t < 260.0 AND t < distL-0.05 AS occ
+  FROM stmar_{S} WHERE iter = 48
 ),
 
--- per-bounce shading + accumulation + next ray
+-- shading, accumulation, next ray
 shade_{S} AS (
   SELECT cb.idx,
-         -- new accumulated colour
-         va(cb.acc, va(vm({arr([1.0,1.0,1.0])}, cb.thr*spec*cb.isMirror),
+         va(cb.acc, va(vm(ARRAY[1.0,1.0,1.0]::double precision[], cb.thr*spec*cb.isMirror),
                        va(vm(terrShade, cb.thr*cb.isTerr),
                           vm(sky(cb.d), cb.thr*cb.isMiss)))) AS acc,
          mix(cb.o, cb.shOrig, cb.isMirror) AS o,
          mix(cb.d, cb.rdir,   cb.isMirror) AS d,
          cb.thr * (1.0 - 0.28*cb.isMirror) AS thr,
          cb.isMirror AS alive
-  FROM comb_{S} cb
-  JOIN sterr_{S} se USING (idx) JOIN socc_{S} sc USING (idx)
-  JOIN soccs_{S} ss USING (idx) JOIN stori_{S} st USING (idx)
-  , LATERAL (SELECT (se.occ OR sc.occ OR ss.occ OR st.occ) AS shadowed) z0
-  , LATERAL (SELECT CASE WHEN z0.shadowed THEN 0.0 ELSE 1.0 END AS lit) z1
+  FROM comb_{S} cb JOIN sterr_{S} se USING (idx) JOIN socc_{S} sc USING (idx) JOIN stori_{S} st USING (idx)
+  , LATERAL (SELECT 1.0 - f01(se.occ OR sc.occ OR st.occ
+                              OR sphT(cb.shOrig, cb.ldir, {SPH_ARGS}) < cb.distL-0.05) AS lit) z1
   , LATERAL (SELECT power(greatest(vd(cb.ldir, cb.rdir),0.0), 60.0) * z1.lit AS spec,
                     greatest(vd(cb.ldir, cb.tN), 0.0) * z1.lit AS lambert,
                     least(1.0, greatest(0.0, (cb.tHit-70.0)/160.0)) AS fog) z2
@@ -402,6 +328,50 @@ CREATE OR REPLACE FUNCTION bsdf3(px double precision, py double precision, pz do
    + least(greatest(abs(px-cx)-hx, greatest(abs(py-cy)-hy, abs(pz-cz)-hz)), 0.0)';
 CREATE OR REPLACE FUNCTION toriSDF3(px double precision, py double precision, pz double precision)
   RETURNS double precision LANGUAGE sql AS 'SELECT {tori_terms()}';
+
+-- ---- ray / primitive intersection helpers (function parameters act as "let") ----
+-- point along a ray, and a 0/1 weight from a predicate (for mix() selection)
+CREATE OR REPLACE FUNCTION pt(o double precision[], d double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT va(o, vm(d, t))';
+CREATE OR REPLACE FUNCTION f01(c boolean) RETURNS double precision LANGUAGE sql AS 'SELECT CASE WHEN c THEN 1.0 ELSE 0.0 END';
+-- tori SDF along a ray, and its normal by central differences
+CREATE OR REPLACE FUNCTION toriAt(o double precision[], d double precision[], t double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t)';
+CREATE OR REPLACE FUNCTION toriN(p double precision[]) RETURNS double precision[] LANGUAGE sql AS
+  'SELECT vn(ARRAY[toriSDF3(p[1]+0.0009,p[2],p[3])-toriSDF3(p[1]-0.0009,p[2],p[3]),
+                   toriSDF3(p[1],p[2]+0.0009,p[3])-toriSDF3(p[1],p[2]-0.0009,p[3]),
+                   toriSDF3(p[1],p[2],p[3]+0.0009)-toriSDF3(p[1],p[2],p[3]-0.0009)])';
+-- sphere (centre c, radius^2 rr): nearest t > eps, else 1e9
+CREATE OR REPLACE FUNCTION sphT2(bb double precision, cc double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT CASE WHEN bb*bb-cc > 0.0 AND -bb-sqrt(greatest(bb*bb-cc,0.0)) > 0.002 THEN -bb-sqrt(greatest(bb*bb-cc,0.0)) ELSE 1e9 END';
+CREATE OR REPLACE FUNCTION sphT(o double precision[], d double precision[], c double precision[], rr double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT sphT2(vd(vs(o,c), d), vd(vs(o,c), vs(o,c)) - rr)';
+-- capped cylinder a-b, radius r: body (quadratic) and the two end disks
+CREATE OR REPLACE FUNCTION cylBody3(tb double precision, hh double precision, aa double precision,
+                                    baba double precision, bard double precision, baoa double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT CASE WHEN hh >= 0.0 AND aa > 1e-9 AND tb > 0.002 AND baoa + tb*bard > 0.0 AND baoa + tb*bard < baba THEN tb ELSE 1e9 END';
+CREATE OR REPLACE FUNCTION cylBody2(aa double precision, bb double precision, cc double precision,
+                                    baba double precision, bard double precision, baoa double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT cylBody3((-bb - sqrt(greatest(bb*bb - aa*cc, 0.0)))/aa, bb*bb - aa*cc, aa, baba, bard, baoa)';
+CREATE OR REPLACE FUNCTION cylBody1(baba double precision, bard double precision, baoa double precision,
+                                    doa double precision, oaoa double precision, r double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT cylBody2(baba - bard*bard, baba*doa - baoa*bard, baba*oaoa - baoa*baoa - r*r*baba, baba, bard, baoa)';
+CREATE OR REPLACE FUNCTION cylBody(o double precision[], d double precision[], a double precision[], b double precision[], r double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT cylBody1(vd(vs(b,a),vs(b,a)), vd(vs(b,a),d), vd(vs(b,a),vs(o,a)), vd(d,vs(o,a)), vd(vs(o,a),vs(o,a)), r)';
+CREATE OR REPLACE FUNCTION cylCap2(o double precision[], d double precision[], c double precision[], r double precision,
+                                   den double precision, ta double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT CASE WHEN abs(den) > 1e-9 AND ta > 0.002 AND vd(vs(pt(o,d,ta),c), vs(pt(o,d,ta),c)) <= r*r THEN ta ELSE 1e9 END';
+CREATE OR REPLACE FUNCTION cylCap(o double precision[], d double precision[], ba double precision[], c double precision[], r double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT cylCap2(o, d, c, r, vd(ba,d), vd(ba, vs(c,o))/CASE WHEN abs(vd(ba,d)) < 1e-12 THEN 1e-12 ELSE vd(ba,d) END)';
+CREATE OR REPLACE FUNCTION cylT(o double precision[], d double precision[], a double precision[], b double precision[], r double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT least(cylBody(o,d,a,b,r), least(cylCap(o,d,vs(b,a),a,r), cylCap(o,d,vs(b,a),b,r)))';
+-- normal at hit t: side normal on the body, -axis on cap a, +axis otherwise
+CREATE OR REPLACE FUNCTION cylN2(t double precision, hp double precision[], a double precision[], ba double precision[],
+                                 tBody double precision, tCapA double precision) RETURNS double precision[] LANGUAGE sql AS
+  'SELECT mix(mix(vn(ba), vn(vm(ba,-1.0)), f01(t = tCapA)),
+              vn(vs(hp, va(a, vm(ba, vd(vs(hp,a),ba)/vd(ba,ba))))), f01(t = tBody))';
+CREATE OR REPLACE FUNCTION cylN(o double precision[], d double precision[], t double precision,
+                                a double precision[], b double precision[], r double precision) RETURNS double precision[] LANGUAGE sql AS
+  'SELECT cylN2(t, pt(o,d,t), a, vs(b,a), cylBody(o,d,a,b,r), cylCap(o,d,vs(b,a),a,r))';
 
 -- ====================================================================
 --  render

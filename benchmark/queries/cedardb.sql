@@ -4,55 +4,55 @@
 -- ====================================================================
 
 -- ---- vector helpers (double precision[3], 1-indexed) ----
-CREATE OR REPLACE FUNCTION va(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]+b[1],a[2]+b[2],a[3]+b[3]]';
-CREATE OR REPLACE FUNCTION vs(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]-b[1],a[2]-b[2],a[3]-b[3]]';
-CREATE OR REPLACE FUNCTION vm(a double precision[], s double precision) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]*s,a[2]*s,a[3]*s]';
-CREATE OR REPLACE FUNCTION vd(a double precision[], b double precision[]) RETURNS double precision LANGUAGE sql AS 'a[1]*b[1]+a[2]*b[2]+a[3]*b[3]';
-CREATE OR REPLACE FUNCTION vmul(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'ARRAY[a[1]*b[1],a[2]*b[2],a[3]*b[3]]';
-CREATE OR REPLACE FUNCTION vn(a double precision[]) RETURNS double precision[] LANGUAGE sql AS 'vm(a, 1.0/sqrt(greatest(vd(a,a), 1e-18)))';
-CREATE OR REPLACE FUNCTION vref(d double precision[], n double precision[]) RETURNS double precision[] LANGUAGE sql AS 'vs(d, vm(n, 2.0*vd(d,n)))';
-CREATE OR REPLACE FUNCTION mix(a double precision[], b double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'va(a, vm(vs(b,a), t))';
-CREATE OR REPLACE FUNCTION lerpS(a double precision, b double precision, t double precision) RETURNS double precision LANGUAGE sql AS 'a*(1.0-t)+b*t';
-CREATE OR REPLACE FUNCTION clampS(lo double precision, hi double precision, x double precision) RETURNS double precision LANGUAGE sql AS 'greatest(lo, least(hi, x))';
+CREATE OR REPLACE FUNCTION va(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT ARRAY[a[1]+b[1],a[2]+b[2],a[3]+b[3]]';
+CREATE OR REPLACE FUNCTION vs(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT ARRAY[a[1]-b[1],a[2]-b[2],a[3]-b[3]]';
+CREATE OR REPLACE FUNCTION vm(a double precision[], s double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT ARRAY[a[1]*s,a[2]*s,a[3]*s]';
+CREATE OR REPLACE FUNCTION vd(a double precision[], b double precision[]) RETURNS double precision LANGUAGE sql AS 'SELECT a[1]*b[1]+a[2]*b[2]+a[3]*b[3]';
+CREATE OR REPLACE FUNCTION vmul(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT ARRAY[a[1]*b[1],a[2]*b[2],a[3]*b[3]]';
+CREATE OR REPLACE FUNCTION vn(a double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT vm(a, 1.0/sqrt(greatest(vd(a,a), 1e-18)))';
+CREATE OR REPLACE FUNCTION vref(d double precision[], n double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT vs(d, vm(n, 2.0*vd(d,n)))';
+CREATE OR REPLACE FUNCTION mix(a double precision[], b double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT va(a, vm(vs(b,a), t))';
+CREATE OR REPLACE FUNCTION lerpS(a double precision, b double precision, t double precision) RETURNS double precision LANGUAGE sql AS 'SELECT a*(1.0-t)+b*t';
+CREATE OR REPLACE FUNCTION clampS(lo double precision, hi double precision, x double precision) RETURNS double precision LANGUAGE sql AS 'SELECT greatest(lo, least(hi, x))';
 CREATE OR REPLACE FUNCTION satb(c double precision[]) RETURNS double precision[] LANGUAGE sql AS
-  'mix(ARRAY[c[1]*0.30+c[2]*0.59+c[3]*0.11, c[1]*0.30+c[2]*0.59+c[3]*0.11, c[1]*0.30+c[2]*0.59+c[3]*0.11], c, 1.45)';
+  'SELECT mix(ARRAY[c[1]*0.30+c[2]*0.59+c[3]*0.11, c[1]*0.30+c[2]*0.59+c[3]*0.11, c[1]*0.30+c[2]*0.59+c[3]*0.11], c, 1.45)';
 
 -- ---- portable terrain noise (identical to ClickHouse/DuckDB; never overflows int64) ----
 CREATE OR REPLACE FUNCTION hashf(ix bigint, iy bigint) RETURNS double precision LANGUAGE sql AS
-  '((((((ix+4096)+(iy+4096)*8192)*1103515245+12345)%2147483648)*1103515245+12345)%2147483648%65536)::double precision/65536.0';
-CREATE OR REPLACE FUNCTION fade(t double precision) RETURNS double precision LANGUAGE sql AS 't*t*t*(t*(t*6.0-15.0)+10.0)';
+  'SELECT ((((((ix+4096)+(iy+4096)*8192)*1103515245+12345)%2147483648)*1103515245+12345)%2147483648%65536)::double precision/65536.0';
+CREATE OR REPLACE FUNCTION fade(t double precision) RETURNS double precision LANGUAGE sql AS 'SELECT t*t*t*(t*(t*6.0-15.0)+10.0)';
 CREATE OR REPLACE FUNCTION vnoise(x double precision, y double precision) RETURNS double precision LANGUAGE sql AS
-  'lerpS(lerpS(hashf(floor(x)::bigint,   floor(y)::bigint),   hashf(floor(x)::bigint+1, floor(y)::bigint),   fade(x-floor(x))),
+  'SELECT lerpS(lerpS(hashf(floor(x)::bigint,   floor(y)::bigint),   hashf(floor(x)::bigint+1, floor(y)::bigint),   fade(x-floor(x))),
          lerpS(hashf(floor(x)::bigint,   floor(y)::bigint+1), hashf(floor(x)::bigint+1, floor(y)::bigint+1), fade(x-floor(x))),
          fade(y-floor(y)))';
 CREATE OR REPLACE FUNCTION fbm(x double precision, y double precision) RETURNS double precision LANGUAGE sql AS
-  '(vnoise(x,y)*0.5 + vnoise(x*2.0,y*2.0)*0.25 + vnoise(x*4.0,y*4.0)*0.125 + vnoise(x*8.0,y*8.0)*0.0625)/0.9375';
-CREATE OR REPLACE FUNCTION terrH(x double precision, y double precision) RETURNS double precision LANGUAGE sql AS '2.4*(fbm(x*0.05, y*0.05) - 0.5)';
+  'SELECT (vnoise(x,y)*0.5 + vnoise(x*2.0,y*2.0)*0.25 + vnoise(x*4.0,y*4.0)*0.125 + vnoise(x*8.0,y*8.0)*0.0625)/0.9375';
+CREATE OR REPLACE FUNCTION terrH(x double precision, y double precision) RETURNS double precision LANGUAGE sql AS 'SELECT 2.4*(fbm(x*0.05, y*0.05) - 0.5)';
 CREATE OR REPLACE FUNCTION terrN(x double precision, y double precision) RETURNS double precision[] LANGUAGE sql AS
-  'vn(ARRAY[(terrH(x-0.25,y)-terrH(x+0.25,y))/0.5, (terrH(x,y-0.25)-terrH(x,y+0.25))/0.5, 1.0])';
+  'SELECT vn(ARRAY[(terrH(x-0.25,y)-terrH(x+0.25,y))/0.5, (terrH(x,y-0.25)-terrH(x,y+0.25))/0.5, 1.0])';
 CREATE OR REPLACE FUNCTION terrCol(h double precision) RETURNS double precision[] LANGUAGE sql AS
-  'mix(mix(mix(mix(ARRAY[0.06,0.24,0.55]::double precision[], ARRAY[0.84,0.68,0.32]::double precision[], clampS(0.0,1.0,(h+0.6)/0.4)),
+  'SELECT mix(mix(mix(mix(ARRAY[0.06,0.24,0.55]::double precision[], ARRAY[0.84,0.68,0.32]::double precision[], clampS(0.0,1.0,(h+0.6)/0.4)),
                   ARRAY[0.16,0.52,0.09]::double precision[], clampS(0.0,1.0,(h+0.1)/0.5)),
               ARRAY[0.46,0.32,0.22]::double precision[], clampS(0.0,1.0,(h-0.6)/0.4)),
           ARRAY[0.97,0.98,1.0]::double precision[], clampS(0.0,1.0,(h-1.0)/0.3))';
 CREATE OR REPLACE FUNCTION sky(d double precision[]) RETURNS double precision[] LANGUAGE sql AS
-  'mix(ARRAY[0.66,0.78,0.96]::double precision[], ARRAY[0.30,0.50,0.85]::double precision[], greatest(0.0, least(1.0, d[3]*1.5)))';
+  'SELECT mix(ARRAY[0.66,0.78,0.96]::double precision[], ARRAY[0.30,0.50,0.85]::double precision[], greatest(0.0, least(1.0, d[3]*1.5)))';
 
 -- ---- torus / box signed-distance fields (scalar args; no array subscripts) ----
 CREATE OR REPLACE FUNCTION tsdf3(px double precision, py double precision, pz double precision,
                                  cx double precision, cz double precision, R double precision, rr double precision)
   RETURNS double precision LANGUAGE sql AS
-  'sqrt((sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R)*(sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R) + py*py) - rr';
+  'SELECT sqrt((sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R)*(sqrt((px-cx)*(px-cx)+(pz-cz)*(pz-cz))-R) + py*py) - rr';
 CREATE OR REPLACE FUNCTION bsdf3(px double precision, py double precision, pz double precision,
                                  cx double precision, cy double precision, cz double precision,
                                  hx double precision, hy double precision, hz double precision)
   RETURNS double precision LANGUAGE sql AS
-  'sqrt(greatest(abs(px-cx)-hx,0.0)*greatest(abs(px-cx)-hx,0.0)
+  'SELECT sqrt(greatest(abs(px-cx)-hx,0.0)*greatest(abs(px-cx)-hx,0.0)
        + greatest(abs(py-cy)-hy,0.0)*greatest(abs(py-cy)-hy,0.0)
        + greatest(abs(pz-cz)-hz,0.0)*greatest(abs(pz-cz)-hz,0.0))
    + least(greatest(abs(px-cx)-hx, greatest(abs(py-cy)-hy, abs(pz-cz)-hz)), 0.0)';
 CREATE OR REPLACE FUNCTION toriSDF3(px double precision, py double precision, pz double precision)
-  RETURNS double precision LANGUAGE sql AS 'least(greatest(tsdf3(px,py,pz,1.3,5.4,2.28,0.62), -bsdf3(px,py,pz,4.425,0.0,5.4,3.025,100.0,1.5)), least(greatest(tsdf3(px,py,pz,12.95,4.5,1.425,0.575), -bsdf3(px,py,pz,16.45,0.0,4.5,3.4,100.0,0.94)), least(greatest(tsdf3(px,py,pz,30.4,4.5,1.475,0.525), -bsdf3(px,py,pz,1000000.0,0.0,1000000.0,0.1,0.1,0.1)), least(greatest(tsdf3(px,py,pz,36.27,4.0,1.45,0.62), -bsdf3(px,py,pz,33.95,0.0,7.75,9.0,100.0,3.75)), least(greatest(tsdf3(px,py,pz,41.9,6.0,1.025,0.425), -bsdf3(px,py,pz,45.375,0.0,-0.25,3.475,100.0,6.25)), least(greatest(tsdf3(px,py,pz,41.9,3.9,1.025,0.425), -bsdf3(px,py,pz,36.375,0.0,7.7,5.525,100.0,3.8)), greatest(tsdf3(px,py,pz,47.25,4.55,1.585,0.465), -bsdf3(px,py,pz,50.8,0.0,3.87,3.25,100.0,0.32))))))))';
+  RETURNS double precision LANGUAGE sql AS 'SELECT least(greatest(tsdf3(px,py,pz,1.3,5.4,2.28,0.62), -bsdf3(px,py,pz,4.425,0.0,5.4,3.025,100.0,1.5)), least(greatest(tsdf3(px,py,pz,12.95,4.5,1.425,0.575), -bsdf3(px,py,pz,16.45,0.0,4.5,3.4,100.0,0.94)), least(greatest(tsdf3(px,py,pz,30.4,4.5,1.475,0.525), -bsdf3(px,py,pz,1000000.0,0.0,1000000.0,0.1,0.1,0.1)), least(greatest(tsdf3(px,py,pz,36.27,4.0,1.45,0.62), -bsdf3(px,py,pz,33.95,0.0,7.75,9.0,100.0,3.75)), least(greatest(tsdf3(px,py,pz,41.9,6.0,1.025,0.425), -bsdf3(px,py,pz,45.375,0.0,-0.25,3.475,100.0,6.25)), least(greatest(tsdf3(px,py,pz,41.9,3.9,1.025,0.425), -bsdf3(px,py,pz,36.375,0.0,7.7,5.525,100.0,3.8)), greatest(tsdf3(px,py,pz,47.25,4.55,1.585,0.465), -bsdf3(px,py,pz,50.8,0.0,3.87,3.25,100.0,0.32))))))))';
 
 -- ====================================================================
 --  render

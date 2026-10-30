@@ -242,8 +242,9 @@ CREATE OR REPLACE MACRO toriSDF(p) AS list_min(list_transform(tori(), tl -> grea
 -- toriSDF, else the macro (call-by-name) re-expands va(O,vm(D,t)) ~9x and the
 -- DuckDB binder blows up.
 CREATE OR REPLACE MACRO marchTorus(O,D) AS
-  list_transform([list_reduce(list_transform(range(marchSteps()+1), j -> 0.02::DOUBLE),
-                              (t,jj) -> t + list_transform([va(O, vm(D, t))], p -> toriSDF(p))[1])],
+  list_transform([list_reduce(range(marchSteps()),
+                              (t,jj) -> t + list_transform([va(O, vm(D, t))], p -> toriSDF(p))[1],
+                              0.02::DOUBLE)],
                  tfin -> if(list_transform([va(O, vm(D, tfin))], p -> toriSDF(p))[1] < marchEps() AND tfin > eps() AND tfin < marchMax(), tfin, 1e9))[1];
 CREATE OR REPLACE MACRO torusN(O,D,t) AS
   list_transform([va(O, vm(D, t))], p -> vn(va(va(vm([1.0,-1.0,-1.0], toriSDF(va(p, [0.0009,-0.0009,-0.0009]))),
@@ -277,12 +278,13 @@ CREATE OR REPLACE MACRO terrCol(h) AS
 -- march the height field; state list [t, prevT, prevDiff, result]
 CREATE OR REPLACE MACRO marchTerr(O,D) AS
   list_transform([list_reduce(
-       list_transform(range(terrSteps()+1), j -> [if(D[3] < -0.001, greatest(0.05, (O[3] - maxTerrH())/(-D[3])), 0.05), 0.0, 1e9, 1e9]),
+       range(terrSteps()),
        (st,jj) -> if(st[4] < 1e8 OR st[4] > 1.5e9, st,
          list_transform([O[3] + st[1]*D[3] - terrH(O[1] + st[1]*D[1], O[2] + st[1]*D[2])], dc ->
             if(st[3] > 0.0 AND dc <= 0.0, [st[1], st[1], dc, st[2] + (st[1]-st[2])*st[3]/(st[3]-dc)],
                if(O[3] + st[1]*D[3] > maxTerrH() AND D[3] >= 0.0, [st[1],st[1],dc,2e9],
-                  [st[1] + greatest(0.06, st[1]*0.035), st[1], dc, 1e9])))[1]))],
+                  [st[1] + greatest(0.45, st[1]*0.008), st[1], dc, 1e9])))[1]),
+       [if(D[3] < -0.001, greatest(0.05, (O[3] - maxTerrH())/(-D[3])), 0.05), 0.0, 1e9, 1e9])],
      rr -> if(rr[4] < 1e8, rr[4], 1e9))[1];
 CREATE OR REPLACE MACRO terrShadow(P,dir,maxd) AS
   len(list_filter(range(terrShadowSteps()),

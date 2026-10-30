@@ -124,7 +124,7 @@ m_{S} AS (
   FROM in_{S}
   UNION ALL
   SELECT idx, o, d,
-    CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN t ELSE t + greatest(0.06, t*0.035) END,
+    CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN t ELSE t + greatest(0.45, t*0.008) END,
     t, dc,
     CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN prevT + (t - prevT)*prevDiff/(prevDiff - dc) ELSE 1e9 END,
     CASE WHEN prevDiff > 0.0 AND dc <= 0.0 THEN 1
@@ -160,7 +160,7 @@ cyl_{S} AS (
 -- planet: sphere csgA with a spherical cavity csgB
 planet_{S} AS (
   SELECT p.idx, least(cEnter, cCav) AS tC,
-         mix(vn(vs({arr(CSGB)}, pt(p.o, p.d, least(cEnter,cCav)))),
+         sel(vn(vs({arr(CSGB)}, pt(p.o, p.d, least(cEnter,cCav)))),
              vn(vs(pt(p.o, p.d, least(cEnter,cCav)), {arr(CSGA)})),
              f01(cEnter <= cCav)) AS nC
   FROM in_{S} p
@@ -181,7 +181,7 @@ planet_{S} AS (
 -- nearest hit (+ i-dot sphere); surface normal, shadow ray, reflected ray
 comb_{S} AS (
   SELECT p.idx, p.o, p.d, p.thr, p.acc, h.tHit, h.isMirror, h.isTerr, h.isMiss, h.hp,
-         n.tN, n.rdir, n.ldir, n.distL, va(h.hp, vm(mix(h.sn, n.tN, h.isTerr), 0.02)) AS shOrig
+         n.tN, n.rdir, n.ldir, n.distL, va(h.hp, vm(sel(h.sn, n.tN, h.isTerr), 0.02)) AS shOrig
   FROM in_{S} p
   JOIN tori_{S} th USING (idx) JOIN cyl_{S} ch USING (idx)
   JOIN planet_{S} pl USING (idx) JOIN terr_{S} tr USING (idx)
@@ -193,7 +193,7 @@ comb_{S} AS (
                     f01(a1.tM < tr.tTerr AND a1.tM < 1e8) AS isMirror,
                     f01(tr.tTerr <= a1.tM AND tr.tTerr < 1e8) AS isTerr,
                     f01(a1.tM >= 1e8 AND tr.tTerr >= 1e8) AS isMiss,
-                    mix(mix(mix(vn(vs(pt(p.o, p.d, sh.tSph), {arr(SPHc[:3])})), ch.nCyl, f01(ch.tCyl<=sh.tSph)),
+                    sel(sel(sel(vn(vs(pt(p.o, p.d, sh.tSph), {arr(SPHc[:3])})), ch.nCyl, f01(ch.tCyl<=sh.tSph)),
                             th.nTorus, f01(th.tTorus<=ch.tCyl AND th.tTorus<=sh.tSph)),
                         pl.nC, f01(pl.tC<a0.tLet)) AS sn) h
   , LATERAL (SELECT terrN(h.hp[1], h.hp[2]) AS tN, vref(p.d, h.sn) AS rdir,
@@ -204,9 +204,9 @@ comb_{S} AS (
 -- shadow ray: terrain (24 fixed steps), cylinders, tori (march); sphere in shade_{S}
 sterr_{S} AS (
   SELECT cb.idx, bool_or(
-           (0.3 + i*0.6) < cb.distL-0.05 AND
-           cb.shOrig[3] + (0.3+i*0.6)*cb.ldir[3] <
-             terrH(cb.shOrig[1] + (0.3+i*0.6)*cb.ldir[1], cb.shOrig[2] + (0.3+i*0.6)*cb.ldir[2])
+           (0.3::double precision + i*0.6::double precision) < cb.distL-0.05 AND
+           cb.shOrig[3] + (0.3::double precision + i*0.6::double precision)*cb.ldir[3] <
+             terrH(cb.shOrig[1] + (0.3::double precision + i*0.6::double precision)*cb.ldir[1], cb.shOrig[2] + (0.3::double precision + i*0.6::double precision)*cb.ldir[2])
          ) AS occ
   FROM comb_{S} cb CROSS JOIN generate_series(0,23) i
   GROUP BY cb.idx
@@ -231,8 +231,8 @@ shade_{S} AS (
          va(cb.acc, va(vm(ARRAY[1.0,1.0,1.0]::double precision[], cb.thr*spec*cb.isMirror),
                        va(vm(terrShade, cb.thr*cb.isTerr),
                           vm(sky(cb.d), cb.thr*cb.isMiss)))) AS acc,
-         mix(cb.o, cb.shOrig, cb.isMirror) AS o,
-         mix(cb.d, cb.rdir,   cb.isMirror) AS d,
+         sel(cb.o, cb.shOrig, cb.isMirror) AS o,
+         sel(cb.d, cb.rdir,   cb.isMirror) AS d,
          cb.thr * (1.0 - 0.28*cb.isMirror) AS thr,
          cb.isMirror AS alive
   FROM comb_{S} cb JOIN sterr_{S} se USING (idx) JOIN socc_{S} sc USING (idx) JOIN stori_{S} st USING (idx)
@@ -254,13 +254,19 @@ rays_{S} AS (
 
 
 # ---- assemble all CTEs ----
-ctes = [f"""px AS (
+# The camera as the reference computes it: in double precision, at run time.
+DBL = "double precision"
+ctes = [f"""cam0 AS (SELECT vn(vs({arr(TARGET)}, {arr(EYE)})) AS cf,
+                 tan(36.0::{DBL} * 0.5 * pi() / 180.0) AS th, {W}.0::{DBL} / {H}.0::{DBL} AS aspect)""",
+f"""cam1 AS (SELECT cf, th, aspect, vn(vc(cf, ARRAY[0.0,0.0,1.0]::{DBL}[])) AS cr FROM cam0)""",
+f"""cam AS (SELECT cf, th, aspect, cr, vc(cr, cf) AS cu FROM cam1)""",
+f"""px AS (
   SELECT g AS idx, {arr(EYE)} AS o,
-         vn(va({arr(FWD)},
-                va(vm({arr(RIGHT)}, (((g % {W}) + 0.5) / {f(W)} * 2.0 - 1.0) * {f(ASPECT)} * {f(TANH)}),
-                   vm({arr(UP)},    (1.0 - ((g / {W})::int + 0.5) / {f(H)} * 2.0) * {f(TANH)})))) AS d,
+         vn(va(cam.cf,
+                va(vm(cam.cr, (((g % {W})::{DBL} + 0.5) / {W}.0::{DBL} * 2.0 - 1.0) * cam.aspect * cam.th),
+                   vm(cam.cu, (1.0 - ((g / {W})::{DBL} + 0.5) / {H}.0::{DBL} * 2.0) * cam.th)))) AS d,
          1.0::double precision AS thr, ARRAY[0.0,0.0,0.0]::double precision[] AS acc, 1.0::double precision AS alive
-  FROM generate_series(0, {W*H-1}) g
+  FROM generate_series(0, {W*H-1}) g, cam
 )""",
 f"""cyls(a, b, r) AS (VALUES
      {cyl_values()}
@@ -285,8 +291,12 @@ CREATE OR REPLACE FUNCTION vm(a double precision[], s double precision) RETURNS 
 CREATE OR REPLACE FUNCTION vd(a double precision[], b double precision[]) RETURNS double precision LANGUAGE sql AS 'SELECT a[1]*b[1]+a[2]*b[2]+a[3]*b[3]';
 CREATE OR REPLACE FUNCTION vmul(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT ARRAY[a[1]*b[1],a[2]*b[2],a[3]*b[3]]';
 CREATE OR REPLACE FUNCTION vn(a double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT vm(a, 1.0/sqrt(greatest(vd(a,a), 1e-18)))';
+CREATE OR REPLACE FUNCTION vc(a double precision[], b double precision[]) RETURNS double precision[] LANGUAGE sql AS
+  'SELECT ARRAY[a[2]*b[3]-a[3]*b[2], a[3]*b[1]-a[1]*b[3], a[1]*b[2]-a[2]*b[1]]';
 CREATE OR REPLACE FUNCTION vref(d double precision[], n double precision[]) RETURNS double precision[] LANGUAGE sql AS 'SELECT vs(d, vm(n, 2.0*vd(d,n)))';
 CREATE OR REPLACE FUNCTION mix(a double precision[], b double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT va(a, vm(vs(b,a), t))';
+-- pick a (c = 0) or b (c = 1) exactly; a + (b-a)*1 can miss b by an ulp, as a CASE would not
+CREATE OR REPLACE FUNCTION sel(a double precision[], b double precision[], c double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT va(vm(a, 1.0 - c), vm(b, c))';
 CREATE OR REPLACE FUNCTION lerpS(a double precision, b double precision, t double precision) RETURNS double precision LANGUAGE sql AS 'SELECT a*(1.0-t)+b*t';
 CREATE OR REPLACE FUNCTION clampS(lo double precision, hi double precision, x double precision) RETURNS double precision LANGUAGE sql AS 'SELECT greatest(lo, least(hi, x))';
 CREATE OR REPLACE FUNCTION satb(c double precision[]) RETURNS double precision[] LANGUAGE sql AS
@@ -333,13 +343,15 @@ CREATE OR REPLACE FUNCTION toriSDF3(px double precision, py double precision, pz
 -- point along a ray, and a 0/1 weight from a predicate (for mix() selection)
 CREATE OR REPLACE FUNCTION pt(o double precision[], d double precision[], t double precision) RETURNS double precision[] LANGUAGE sql AS 'SELECT va(o, vm(d, t))';
 CREATE OR REPLACE FUNCTION f01(c boolean) RETURNS double precision LANGUAGE sql AS 'SELECT CASE WHEN c THEN 1.0 ELSE 0.0 END';
--- tori SDF along a ray, and its normal by central differences
+-- tori SDF along a ray, and its normal by the reference's tetrahedral estimate: the SDF at
+-- p + (e,-e,-e), (-e,-e,e), (-e,e,-e), (e,e,e), weighted by those signs (a, b, c, d here)
 CREATE OR REPLACE FUNCTION toriAt(o double precision[], d double precision[], t double precision) RETURNS double precision LANGUAGE sql AS
   'SELECT toriSDF3(o[1]+d[1]*t, o[2]+d[2]*t, o[3]+d[3]*t)';
+CREATE OR REPLACE FUNCTION toriN4(a double precision, b double precision, c double precision, d double precision) RETURNS double precision[] LANGUAGE sql AS
+  'SELECT vn(ARRAY[(a - b) + (d - c), (-a - b) + (c + d), (b - a) + (d - c)])';
 CREATE OR REPLACE FUNCTION toriN(p double precision[]) RETURNS double precision[] LANGUAGE sql AS
-  'SELECT vn(ARRAY[toriSDF3(p[1]+0.0009,p[2],p[3])-toriSDF3(p[1]-0.0009,p[2],p[3]),
-                   toriSDF3(p[1],p[2]+0.0009,p[3])-toriSDF3(p[1],p[2]-0.0009,p[3]),
-                   toriSDF3(p[1],p[2],p[3]+0.0009)-toriSDF3(p[1],p[2],p[3]-0.0009)])';
+  'SELECT toriN4(toriSDF3(p[1]+0.0009,p[2]-0.0009,p[3]-0.0009), toriSDF3(p[1]-0.0009,p[2]-0.0009,p[3]+0.0009),
+                 toriSDF3(p[1]-0.0009,p[2]+0.0009,p[3]-0.0009), toriSDF3(p[1]+0.0009,p[2]+0.0009,p[3]+0.0009))';
 -- sphere (centre c, radius^2 rr): nearest t > eps, else 1e9
 CREATE OR REPLACE FUNCTION sphT2(bb double precision, cc double precision) RETURNS double precision LANGUAGE sql AS
   'SELECT CASE WHEN bb*bb-cc > 0.0 AND -bb-sqrt(greatest(bb*bb-cc,0.0)) > 0.002 THEN -bb-sqrt(greatest(bb*bb-cc,0.0)) ELSE 1e9 END';
@@ -367,7 +379,7 @@ CREATE OR REPLACE FUNCTION cylT(o double precision[], d double precision[], a do
 -- normal at hit t: side normal on the body, -axis on cap a, +axis otherwise
 CREATE OR REPLACE FUNCTION cylN2(t double precision, hp double precision[], a double precision[], ba double precision[],
                                  tBody double precision, tCapA double precision) RETURNS double precision[] LANGUAGE sql AS
-  'SELECT mix(mix(vn(ba), vn(vm(ba,-1.0)), f01(t = tCapA)),
+  'SELECT sel(sel(vn(ba), vn(vm(ba,-1.0)), f01(t = tCapA)),
               vn(vs(hp, va(a, vm(ba, vd(vs(hp,a),ba)/vd(ba,ba))))), f01(t = tBody))';
 CREATE OR REPLACE FUNCTION cylN(o double precision[], d double precision[], t double precision,
                                 a double precision[], b double precision[], r double precision) RETURNS double precision[] LANGUAGE sql AS
@@ -383,9 +395,9 @@ COPY (
 WITH RECURSIVE
 {WITHBLOCK}
 SELECT idx,
-  round(clampS(0.0,1.0, power(greatest(col[1],0.0)*1.15, 1.0/2.2))*255)::int AS r,
-  round(clampS(0.0,1.0, power(greatest(col[2],0.0)*1.15, 1.0/2.2))*255)::int AS g,
-  round(clampS(0.0,1.0, power(greatest(col[3],0.0)*1.15, 1.0/2.2))*255)::int AS b
+  round(clampS(0.0,1.0, power(greatest(col[1],0.0)*1.15::double precision, 1.0::double precision/2.2::double precision))*255.0::double precision)::int AS r,
+  round(clampS(0.0,1.0, power(greatest(col[2],0.0)*1.15::double precision, 1.0::double precision/2.2::double precision))*255.0::double precision)::int AS g,
+  round(clampS(0.0,1.0, power(greatest(col[3],0.0)*1.15::double precision, 1.0::double precision/2.2::double precision))*255.0::double precision)::int AS b
 FROM (
   SELECT idx, va(acc, vm(sky(d), thr*alive)) AS col FROM {prev}
 ) f

@@ -16,11 +16,11 @@ CREATE OR REPLACE FUNCTION le01(x double precision, y double precision) RETURNS 
 CREATE OR REPLACE FUNCTION eq01(x double precision, y double precision) RETURNS double precision LANGUAGE sql AS
   'SELECT CASE WHEN x = y THEN 1.0::double precision ELSE 0.0::double precision END';
 CREATE OR REPLACE FUNCTION camU(g bigint) RETURNS double precision LANGUAGE sql AS
-  'SELECT ((((g % 192) + 0.5) / 192.0 * 2.0 - 1.0) * 2.13333333 * 0.3249197)::double precision';
+  'SELECT (((g % 192)::double precision + 0.5) / 192.0::double precision * 2.0 - 1.0) * (192.0::double precision / 90.0::double precision) * tan(36.0::double precision * 0.5 * pi() / 180.0)';
 CREATE OR REPLACE FUNCTION camV(g bigint) RETURNS double precision LANGUAGE sql AS
-  'SELECT ((1.0 - ((g / 192)::int + 0.5) / 90.0 * 2.0) * 0.3249197)::double precision';
+  'SELECT (1.0 - ((g / 192)::double precision + 0.5) / 90.0::double precision * 2.0) * tan(36.0::double precision * 0.5 * pi() / 180.0)';
 CREATE OR REPLACE FUNCTION tonemap(c double precision) RETURNS bigint LANGUAGE sql AS
-  'SELECT round(clamp01(power(greatest(c, 0.0) * 1.15, 1.0/2.2)) * 255)::bigint';
+  'SELECT round(clamp01(power(greatest(c, 0.0) * 1.15::double precision, 1.0::double precision / 2.2::double precision)) * 255.0::double precision)::bigint';
 CREATE OR REPLACE FUNCTION hashf(ix bigint, iy bigint) RETURNS double precision LANGUAGE sql AS
   'SELECT ((((((ix + 4096) + (iy + 4096) * 8192) * 1103515245 + 12345) % 2147483648) * 1103515245 + 12345) % 2147483648 % 65536)::double precision / 65536.0';
 CREATE OR REPLACE FUNCTION fade(t double precision) RETURNS double precision LANGUAGE sql AS
@@ -75,12 +75,12 @@ CREATE OR REPLACE FUNCTION toriSDF(px double precision, py double precision, pz 
     greatest(tsdf3(px, py, pz, 47.25, 4.55, 1.585, 0.465), -bsdf3(px, py, pz, 50.8, 0.0, 3.87, 3.25, 100.0, 0.32))))))))';
 CREATE OR REPLACE FUNCTION toriAt(ox double precision, oy double precision, oz double precision, dx double precision, dy double precision, dz double precision, t double precision) RETURNS double precision LANGUAGE sql AS
   'SELECT toriSDF(ox + dx * t, oy + dy * t, oz + dz * t)';
-CREATE OR REPLACE FUNCTION toriGx(px double precision, py double precision, pz double precision) RETURNS double precision LANGUAGE sql AS
-  'SELECT toriSDF(px + 0.0009, py, pz) - toriSDF(px - 0.0009, py, pz)';
-CREATE OR REPLACE FUNCTION toriGy(px double precision, py double precision, pz double precision) RETURNS double precision LANGUAGE sql AS
-  'SELECT toriSDF(px, py + 0.0009, pz) - toriSDF(px, py - 0.0009, pz)';
-CREATE OR REPLACE FUNCTION toriGz(px double precision, py double precision, pz double precision) RETURNS double precision LANGUAGE sql AS
-  'SELECT toriSDF(px, py, pz + 0.0009) - toriSDF(px, py, pz - 0.0009)';
+CREATE OR REPLACE FUNCTION toriGx(a double precision, b double precision, c double precision, d double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT (a - b) + (d - c)';
+CREATE OR REPLACE FUNCTION toriGy(a double precision, b double precision, c double precision, d double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT (-a - b) + (c + d)';
+CREATE OR REPLACE FUNCTION toriGz(a double precision, b double precision, c double precision, d double precision) RETURNS double precision LANGUAGE sql AS
+  'SELECT (b - a) + (d - c)';
 CREATE OR REPLACE FUNCTION torusT(ox double precision, oy double precision, oz double precision, dx double precision, dy double precision, dz double precision, t double precision) RETURNS double precision LANGUAGE sql AS
   'SELECT CASE WHEN toriAt(ox, oy, oz, dx, dy, dz, t) < 0.01 AND t > 0.002 AND t < 260.0 THEN t ELSE 1e9 END';
 CREATE OR REPLACE FUNCTION sphT2(bb double precision, cc double precision) RETURNS double precision LANGUAGE sql AS
@@ -185,38 +185,52 @@ cyl(8, 34.82, 0.0, 3.5, 34.82, 0.0, 7.5, 0.62).
 cyl(9, 37.72, 0.0, 3.5, 37.72, 0.0, 7.5, 0.62).
 cyl(10, 45.35, 0.0, 4.6, 48.85, 0.0, 4.6, 0.41333333).
 step(0.3).
-step(0.9).
+step(0.8999999999999999).
 step(1.5).
-step(2.1).
-step(2.7).
+step(2.0999999999999996).
+step(2.6999999999999997).
 step(3.3).
-step(3.9).
+step(3.8999999999999995).
 step(4.5).
 step(5.1).
-step(5.7).
+step(5.699999999999999).
 step(6.3).
-step(6.9).
-step(7.5).
+step(6.8999999999999995).
+step(7.499999999999999).
 step(8.1).
-step(8.7).
+step(8.700000000000001).
 step(9.3).
 step(9.9).
 step(10.5).
 step(11.1).
-step(11.7).
+step(11.700000000000001).
 step(12.3).
 step(12.9).
 step(13.5).
 step(14.1).
 
-rays_b1(I, 24.0, -45.0, 12.0, (V12 * V16), (V13 * V16), (V14 * V16), 1.0, 0.0, 0.0, 0.0) :-
+rays_b1(I, 24.0, -45.0, 12.0, (V31 * V35), (V32 * V35), (V33 * V35), 1.0, 0.0, 0.0, 0.0) :-
     I = range(0, 17280),
-    V1 = @camu(I),
-    V5 = @camv(I),
-    V12 = 0.0 + ((1.0 * V1) + (0.0 * V5)),
-    V13 = 0.9912279 + ((0.0 * V1) + (0.13216372 * V5)),
-    V14 = -0.13216372 + ((0.0 * V1) + (0.9912279 * V5)),
-    V16 = 1.0 / @sqrt(max((V12 * V12 + V13 * V13 + V14 * V14), 1e-18)).
+    V1 = 24.0 - 24.0,
+    V2 = 0.0 - -45.0,
+    V3 = 6.0 - 12.0,
+    V5 = 1.0 / @sqrt(max((V1 * V1 + V2 * V2 + V3 * V3), 1e-18)),
+    V6 = V1 * V5,
+    V7 = V2 * V5,
+    V8 = V3 * V5,
+    V9 = V7 * 1.0 - V8 * 0.0,
+    V10 = V8 * 0.0 - V6 * 1.0,
+    V11 = V6 * 0.0 - V7 * 0.0,
+    V13 = 1.0 / @sqrt(max((V9 * V9 + V10 * V10 + V11 * V11), 1e-18)),
+    V14 = V9 * V13,
+    V15 = V10 * V13,
+    V16 = V11 * V13,
+    V20 = @camu(I),
+    V24 = @camv(I),
+    V31 = V6 + ((V14 * V20) + ((V15 * V8 - V16 * V7) * V24)),
+    V32 = V7 + ((V15 * V20) + ((V16 * V6 - V14 * V8) * V24)),
+    V33 = V8 + ((V16 * V20) + ((V14 * V7 - V15 * V6) * V24)),
+    V35 = 1.0 / @sqrt(max((V31 * V31 + V32 * V32 + V33 * V33), 1e-18)).
 
 rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz) :- rays_b1(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz).
 
@@ -229,7 +243,7 @@ marcheval_b1(I, T, PT, PD, It, Oz + T * Dz - @terrh(Ox + T * Dx, Oy + T * Dy)) :
 
 terr_b1_hit(I, PT + (T - PT) * PD / (PD - DC)) :- marcheval_b1(I, T, PT, PD, It, DC), PD > 0.0, DC <= 0.0.
 
-march_b1(I, T + max(0.06, T * 0.035), T, DC, It + 1) :-
+march_b1(I, T + max(0.45, T * 0.008), T, DC, It + 1) :-
     marcheval_b1(I, T, PT, PD, It, DC), rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz), !(PD > 0.0, DC <= 0.0), !(Oz + T * Dz > 1.55, Dz >= 0.0).
 
 terr_b1(I, T) :- terr_b1_hit(I, T).
@@ -240,86 +254,81 @@ tmar_b1(I, 0.02, 0) :- rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
 tmar_b1(I, T + @toriat(Ox, Oy, Oz, Dx, Dy, Dz, T), It + 1) :- tmar_b1(I, T, It), It < 48, rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
-torus_b1(I, V20, (V28 * V32), (V29 * V32), (V30 * V32)) :-
+torus_b1(I, V39, (V51 * V55), (V52 * V55), (V53 * V55)) :-
     tmar_b1(I, T, 48),
     rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz),
-    V20 = @torust(Ox, Oy, Oz, Dx, Dy, Dz, T),
-    V21 = min(V20, 5000.0),
-    V25 = Ox + (Dx * V21),
-    V26 = Oy + (Dy * V21),
-    V27 = Oz + (Dz * V21),
-    V28 = @torigx(V25, V26, V27),
-    V29 = @torigy(V25, V26, V27),
-    V30 = @torigz(V25, V26, V27),
-    V32 = 1.0 / @sqrt(max((V28 * V28 + V29 * V29 + V30 * V30), 1e-18)).
+    V39 = @torust(Ox, Oy, Oz, Dx, Dy, Dz, T),
+    V40 = min(V39, 5000.0),
+    V44 = Ox + (Dx * V40),
+    V45 = Oy + (Dy * V40),
+    V46 = Oz + (Dz * V40),
+    V47 = @torisdf(V44 + 0.0009, V45 - 0.0009, V46 - 0.0009),
+    V48 = @torisdf(V44 - 0.0009, V45 - 0.0009, V46 + 0.0009),
+    V49 = @torisdf(V44 - 0.0009, V45 + 0.0009, V46 - 0.0009),
+    V50 = @torisdf(V44 + 0.0009, V45 + 0.0009, V46 + 0.0009),
+    V51 = @torigx(V47, V48, V49, V50),
+    V52 = @torigy(V47, V48, V49, V50),
+    V53 = @torigz(V47, V48, V49, V50),
+    V55 = 1.0 / @sqrt(max((V51 * V51 + V52 * V52 + V53 * V53), 1e-18)).
 
-cyl_b1(I, Id, V36, V37, min(V36, min(V37, @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Bx, By, Bz, R)))) :-
+cyl_b1(I, Id, V59, V60, min(V59, min(V60, @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Bx, By, Bz, R)))) :-
     rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz),
     cyl(Id, Ax, Ay, Az, Bx, By, Bz, R),
-    V36 = @cylbody(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, R),
-    V37 = @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Ax, Ay, Az, R).
+    V59 = @cylbody(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, R),
+    V60 = @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Ax, Ay, Az, R).
 
 cylmin_b1(I, T) :- rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz), T = min X : { cyl_b1(I, _, _, _, X) }.
 
 cylpick_b1(I, Id) :- cylmin_b1(I, T), Id = min K : { cyl_b1(I, K, _, _, T) }.
 
-cyln_b1(I, (V67 + (((V82 * V86) - V67) * V90)), (V68 + (((V83 * V86) - V68) * V90)), (V69 + (((V84 * V86) - V69) * V90))) :-
+cyln_b1(I, (((((V68 * V72) * (1.0 - @eq01(T, TA))) + ((V76 * V80) * @eq01(T, TA))) * (1.0 - V113)) + ((V105 * V109) * V113)), (((((V69 * V72) * (1.0 - @eq01(T, TA))) + ((V77 * V80) * @eq01(T, TA))) * (1.0 - V113)) + ((V106 * V109) * V113)), (((((V70 * V72) * (1.0 - @eq01(T, TA))) + ((V78 * V80) * @eq01(T, TA))) * (1.0 - V113)) + ((V107 * V109) * V113))) :-
     cylpick_b1(I, Id),
     cylmin_b1(I, T),
     rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz),
     cyl(Id, Ax, Ay, Az, Bx, By, Bz, R),
     cyl_b1(I, Id, TB, TA, _),
-    V42 = Ox + (Dx * T),
-    V43 = Oy + (Dy * T),
-    V44 = Oz + (Dz * T),
-    V45 = Bx - Ax,
-    V46 = By - Ay,
-    V47 = Bz - Az,
-    V49 = 1.0 / @sqrt(max((V45 * V45 + V46 * V46 + V47 * V47), 1e-18)),
-    V50 = V45 * V49,
-    V51 = V46 * V49,
-    V52 = V47 * V49,
-    V53 = V45 * -1.0,
-    V54 = V46 * -1.0,
-    V55 = V47 * -1.0,
-    V57 = 1.0 / @sqrt(max((V53 * V53 + V54 * V54 + V55 * V55), 1e-18)),
-    V67 = V50 + (((V53 * V57) - V50) * @eq01(T, TA)),
-    V68 = V51 + (((V54 * V57) - V51) * @eq01(T, TA)),
-    V69 = V52 + (((V55 * V57) - V52) * @eq01(T, TA)),
-    V75 = ((V42 - Ax) * V45 + (V43 - Ay) * V46 + (V44 - Az) * V47) / (V45 * V45 + V46 * V46 + V47 * V47),
-    V82 = V42 - (Ax + (V45 * V75)),
-    V83 = V43 - (Ay + (V46 * V75)),
-    V84 = V44 - (Az + (V47 * V75)),
-    V86 = 1.0 / @sqrt(max((V82 * V82 + V83 * V83 + V84 * V84), 1e-18)),
-    V90 = @eq01(T, TB).
+    V65 = Ox + (Dx * T),
+    V66 = Oy + (Dy * T),
+    V67 = Oz + (Dz * T),
+    V68 = Bx - Ax,
+    V69 = By - Ay,
+    V70 = Bz - Az,
+    V72 = 1.0 / @sqrt(max((V68 * V68 + V69 * V69 + V70 * V70), 1e-18)),
+    V76 = V68 * -1.0,
+    V77 = V69 * -1.0,
+    V78 = V70 * -1.0,
+    V80 = 1.0 / @sqrt(max((V76 * V76 + V77 * V77 + V78 * V78), 1e-18)),
+    V98 = ((V65 - Ax) * V68 + (V66 - Ay) * V69 + (V67 - Az) * V70) / (V68 * V68 + V69 * V69 + V70 * V70),
+    V105 = V65 - (Ax + (V68 * V98)),
+    V106 = V66 - (Ay + (V69 * V98)),
+    V107 = V67 - (Az + (V70 * V98)),
+    V109 = 1.0 / @sqrt(max((V105 * V105 + V106 * V106 + V107 * V107), 1e-18)),
+    V113 = @eq01(T, TB).
 
 sph_b1(I, @spht(Ox, Oy, Oz, Dx, Dy, Dz, 8.65, 0.0, 8.8, 0.5184)) :- rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
-planet_b1(I, V106, (V118 + (((V121 * V125) - V118) * V129)), (V119 + (((V122 * V125) - V119) * V129)), (V120 + (((V123 * V125) - V120) * V129))) :-
+planet_b1(I, V129, (((V136 * V140) * (1.0 - V152)) + ((V144 * V148) * V152)), (((V137 * V140) * (1.0 - V152)) + ((V145 * V148) * V152)), (((V138 * V140) * (1.0 - V152)) + ((V146 * V148) * V152))) :-
     rod_b1(I, Ox, Oy, Oz, Dx, Dy, Dz),
-    V100 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0),
-    V102 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
-    V103 = @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
-    V104 = @planetentry(V100, V102, V103),
-    V105 = @planetcavity(V100, @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0), V102, V103),
-    V106 = min(V104, V105),
-    V110 = Ox + (Dx * V106),
-    V111 = Oy + (Dy * V106),
-    V112 = Oz + (Dz * V106),
-    V113 = 24.0 - V110,
-    V114 = 6.6 - V111,
-    V115 = 17.0 - V112,
-    V117 = 1.0 / @sqrt(max((V113 * V113 + V114 * V114 + V115 * V115), 1e-18)),
-    V118 = V113 * V117,
-    V119 = V114 * V117,
-    V120 = V115 * V117,
-    V121 = V110 - 24.0,
-    V122 = V111 - 12.0,
-    V123 = V112 - 17.5,
-    V125 = 1.0 / @sqrt(max((V121 * V121 + V122 * V122 + V123 * V123), 1e-18)),
-    V129 = @le01(V104, V105).
+    V123 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0),
+    V125 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
+    V126 = @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
+    V127 = @planetentry(V123, V125, V126),
+    V128 = @planetcavity(V123, @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0), V125, V126),
+    V129 = min(V127, V128),
+    V133 = Ox + (Dx * V129),
+    V134 = Oy + (Dy * V129),
+    V135 = Oz + (Dz * V129),
+    V136 = 24.0 - V133,
+    V137 = 6.6 - V134,
+    V138 = 17.0 - V135,
+    V140 = 1.0 / @sqrt(max((V136 * V136 + V137 * V137 + V138 * V138), 1e-18)),
+    V144 = V133 - 24.0,
+    V145 = V134 - 12.0,
+    V146 = V135 - 17.5,
+    V148 = 1.0 / @sqrt(max((V144 * V144 + V145 * V145 + V146 * V146), 1e-18)),
+    V152 = @le01(V127, V128).
 
-comb_b1(I, (as(V149, number) + 2 * as(V150, number)), V141, V146, V147, V148, V199, V200, V201, (Dx - (V192 * V203)), (Dy - (V193 * V203)), (Dz - (V194 * V203)), (V210 * V214), (V211 * V214), (V212 * V214), @sqrt((V210 * V210 + V211 * V211 + V212 * V212)), (V146 + ((V192 + ((V199 - V192) * V150)) * 0.02)), (V147 + ((V193 + ((V200 - V193) * V150)) * 0.02)), (V148 + ((V194 + ((V201 - V194) * V150)) * 0.02)), V149) :-
+comb_b1(I, (as(V172, number) + 2 * as(V173, number)), V164, V169, V170, V171, V222, V223, V224, (Dx - (V215 * V226)), (Dy - (V216 * V226)), (Dz - (V217 * V226)), (V233 * V237), (V234 * V237), (V235 * V237), @sqrt((V233 * V233 + V234 * V234 + V235 * V235)), (V169 + (((V215 * (1.0 - V173)) + (V222 * V173)) * 0.02)), (V170 + (((V216 * (1.0 - V173)) + (V223 * V173)) * 0.02)), (V171 + (((V217 * (1.0 - V173)) + (V224 * V173)) * 0.02)), V172) :-
     rays_b1(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     terr_b1(I, TTerr),
     torus_b1(I, TTor, NTx, NTy, NTz),
@@ -327,44 +336,35 @@ comb_b1(I, (as(V149, number) + 2 * as(V150, number)), V141, V146, V147, V148, V1
     cyln_b1(I, NCx, NCy, NCz),
     sph_b1(I, TSph),
     planet_b1(I, TC, NPx, NPy, NPz),
-    V139 = min(TCyl, min(TSph, TTor)),
-    V140 = min(V139, TC),
-    V141 = min(V140, TTerr),
-    V142 = min(V141, 5000.0),
-    V146 = Ox + (Dx * V142),
-    V147 = Oy + (Dy * V142),
-    V148 = Oz + (Dz * V142),
-    V149 = @lt01(V140, TTerr) * @lt01(V140, 1e8),
-    V150 = @le01(TTerr, V140) * @lt01(TTerr, 1e8),
-    V158 = (Ox + (Dx * TSph)) - 8.65,
-    V159 = (Oy + (Dy * TSph)) - 0.0,
-    V160 = (Oz + (Dz * TSph)) - 8.8,
-    V162 = 1.0 / @sqrt(max((V158 * V158 + V159 * V159 + V160 * V160), 1e-18)),
-    V163 = V158 * V162,
-    V164 = V159 * V162,
-    V165 = V160 * V162,
-    V172 = V163 + ((NCx - V163) * @le01(TCyl, TSph)),
-    V173 = V164 + ((NCy - V164) * @le01(TCyl, TSph)),
-    V174 = V165 + ((NCz - V165) * @le01(TCyl, TSph)),
-    V175 = @le01(TTor, TCyl) * @le01(TTor, TSph),
-    V182 = V172 + ((NTx - V172) * V175),
-    V183 = V173 + ((NTy - V173) * V175),
-    V184 = V174 + ((NTz - V174) * V175),
-    V185 = @lt01(TC, V139),
-    V192 = V182 + ((NPx - V182) * V185),
-    V193 = V183 + ((NPy - V183) * V185),
-    V194 = V184 + ((NPz - V184) * V185),
-    V195 = @terrgx(V146, V147),
-    V196 = @terrgy(V146, V147),
-    V198 = 1.0 / @sqrt(max((V195 * V195 + V196 * V196 + 1.0 * 1.0), 1e-18)),
-    V199 = V195 * V198,
-    V200 = V196 * V198,
-    V201 = 1.0 * V198,
-    V203 = 2.0 * (Dx * V192 + Dy * V193 + Dz * V194),
-    V210 = 9.0 - V146,
-    V211 = -30.0 - V147,
-    V212 = 52.0 - V148,
-    V214 = 1.0 / @sqrt(max((V210 * V210 + V211 * V211 + V212 * V212), 1e-18)).
+    V162 = min(TCyl, min(TSph, TTor)),
+    V163 = min(V162, TC),
+    V164 = min(V163, TTerr),
+    V165 = min(V164, 5000.0),
+    V169 = Ox + (Dx * V165),
+    V170 = Oy + (Dy * V165),
+    V171 = Oz + (Dz * V165),
+    V172 = @lt01(V163, TTerr) * @lt01(V163, 1e8),
+    V173 = @le01(TTerr, V163) * @lt01(TTerr, 1e8),
+    V181 = (Ox + (Dx * TSph)) - 8.65,
+    V182 = (Oy + (Dy * TSph)) - 0.0,
+    V183 = (Oz + (Dz * TSph)) - 8.8,
+    V185 = 1.0 / @sqrt(max((V181 * V181 + V182 * V182 + V183 * V183), 1e-18)),
+    V198 = @le01(TTor, TCyl) * @le01(TTor, TSph),
+    V208 = @lt01(TC, V162),
+    V215 = ((((((V181 * V185) * (1.0 - @le01(TCyl, TSph))) + (NCx * @le01(TCyl, TSph))) * (1.0 - V198)) + (NTx * V198)) * (1.0 - V208)) + (NPx * V208),
+    V216 = ((((((V182 * V185) * (1.0 - @le01(TCyl, TSph))) + (NCy * @le01(TCyl, TSph))) * (1.0 - V198)) + (NTy * V198)) * (1.0 - V208)) + (NPy * V208),
+    V217 = ((((((V183 * V185) * (1.0 - @le01(TCyl, TSph))) + (NCz * @le01(TCyl, TSph))) * (1.0 - V198)) + (NTz * V198)) * (1.0 - V208)) + (NPz * V208),
+    V218 = @terrgx(V169, V170),
+    V219 = @terrgy(V169, V170),
+    V221 = 1.0 / @sqrt(max((V218 * V218 + V219 * V219 + 1.0 * 1.0), 1e-18)),
+    V222 = V218 * V221,
+    V223 = V219 * V221,
+    V224 = 1.0 * V221,
+    V226 = 2.0 * (Dx * V215 + Dy * V216 + Dz * V217),
+    V233 = 9.0 - V169,
+    V234 = -30.0 - V170,
+    V235 = 52.0 - V171,
+    V237 = 1.0 / @sqrt(max((V233 * V233 + V234 * V234 + V235 * V235), 1e-18)).
 
 srod_b1(I, SOx, SOy, SOz, LDx, LDy, LDz, DistL) :- comb_b1(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror), Kind > 0.
 
@@ -386,25 +386,25 @@ lit_b1(I, 0.0) :- shadow_b1(I).
 
 lit_b1(I, 1.0) :- srod_b1(I, _, _, _, _, _, _, _), !shadow_b1(I).
 
-rays_b2(I, (Ox + ((SOx - Ox) * IsMirror)), (Oy + ((SOy - Oy) * IsMirror)), (Oz + ((SOz - Oz) * IsMirror)), (Dx + ((RDx - Dx) * IsMirror)), (Dy + ((RDy - Dy) * IsMirror)), (Dz + ((RDz - Dz) * IsMirror)), (Thr * (1.0 - 0.28 * IsMirror)), (Accx + V237), (Accy + V237), (Accz + V237)) :-
+rays_b2(I, ((Ox * (1.0 - IsMirror)) + (SOx * IsMirror)), ((Oy * (1.0 - IsMirror)) + (SOy * IsMirror)), ((Oz * (1.0 - IsMirror)) + (SOz * IsMirror)), ((Dx * (1.0 - IsMirror)) + (RDx * IsMirror)), ((Dy * (1.0 - IsMirror)) + (RDy * IsMirror)), ((Dz * (1.0 - IsMirror)) + (RDz * IsMirror)), (Thr * (1.0 - 0.28 * IsMirror)), (Accx + V260), (Accy + V260), (Accz + V260)) :-
     rays_b1(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     comb_b1(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror),
     Kind = 1,
     lit_b1(I, Lit),
-    V237 = 1.0 * (Thr * (@power(max((LDx * RDx + LDy * RDy + LDz * RDz), 0.0), 60.0) * Lit) * IsMirror).
+    V260 = 1.0 * (Thr * (@power(max((LDx * RDx + LDy * RDy + LDz * RDz), 0.0), 60.0) * Lit) * IsMirror).
 
-done(I, (Accx + (((@satbc(V274, V275, V276, V274) * V277) + (0.66 * V262)) * Thr)), (Accy + (((@satbc(V274, V275, V276, V275) * V277) + (0.78 * V262)) * Thr)), (Accz + (((@satbc(V274, V275, V276, V276) * V277) + (0.96 * V262)) * Thr))) :-
+done(I, (Accx + (((@satbc(V297, V298, V299, V297) * V300) + (0.66 * V285)) * Thr)), (Accy + (((@satbc(V297, V298, V299, V298) * V300) + (0.78 * V285)) * Thr)), (Accz + (((@satbc(V297, V298, V299, V299) * V300) + (0.96 * V285)) * Thr))) :-
     rays_b1(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     comb_b1(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror),
     Kind = 2,
     lit_b1(I, Lit),
-    V262 = min(1.0, max(0.0, (THit - 70.0) / 160.0)),
-    V263 = 0.26 + 0.18 * max(TNz, 0.0),
-    V267 = 1.45 * (max((LDx * TNx + LDy * TNy + LDz * TNz), 0.0) * Lit),
-    V274 = @terrcolx(HPz) * ((0.45 * V263) + (1.06 * V267)),
-    V275 = @terrcoly(HPz) * ((0.56 * V263) + (0.97 * V267)),
-    V276 = @terrcolz(HPz) * ((0.8 * V263) + (0.82 * V267)),
-    V277 = 1.0 - V262.
+    V285 = min(1.0, max(0.0, (THit - 70.0) / 160.0)),
+    V286 = 0.26 + 0.18 * max(TNz, 0.0),
+    V290 = 1.45 * (max((LDx * TNx + LDy * TNy + LDz * TNz), 0.0) * Lit),
+    V297 = @terrcolx(HPz) * ((0.45 * V286) + (1.06 * V290)),
+    V298 = @terrcoly(HPz) * ((0.56 * V286) + (0.97 * V290)),
+    V299 = @terrcolz(HPz) * ((0.8 * V286) + (0.82 * V290)),
+    V300 = 1.0 - V285.
 
 done(I, (Accx + (@skyx(Dz) * Thr)), (Accy + (@skyy(Dz) * Thr)), (Accz + (@skyz(Dz) * Thr))) :-
     rays_b1(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
@@ -422,7 +422,7 @@ marcheval_b2(I, T, PT, PD, It, Oz + T * Dz - @terrh(Ox + T * Dx, Oy + T * Dy)) :
 
 terr_b2_hit(I, PT + (T - PT) * PD / (PD - DC)) :- marcheval_b2(I, T, PT, PD, It, DC), PD > 0.0, DC <= 0.0.
 
-march_b2(I, T + max(0.06, T * 0.035), T, DC, It + 1) :-
+march_b2(I, T + max(0.45, T * 0.008), T, DC, It + 1) :-
     marcheval_b2(I, T, PT, PD, It, DC), rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz), !(PD > 0.0, DC <= 0.0), !(Oz + T * Dz > 1.55, Dz >= 0.0).
 
 terr_b2(I, T) :- terr_b2_hit(I, T).
@@ -433,86 +433,81 @@ tmar_b2(I, 0.02, 0) :- rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
 tmar_b2(I, T + @toriat(Ox, Oy, Oz, Dx, Dy, Dz, T), It + 1) :- tmar_b2(I, T, It), It < 48, rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
-torus_b2(I, V299, (V307 * V311), (V308 * V311), (V309 * V311)) :-
+torus_b2(I, V322, (V334 * V338), (V335 * V338), (V336 * V338)) :-
     tmar_b2(I, T, 48),
     rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz),
-    V299 = @torust(Ox, Oy, Oz, Dx, Dy, Dz, T),
-    V300 = min(V299, 5000.0),
-    V304 = Ox + (Dx * V300),
-    V305 = Oy + (Dy * V300),
-    V306 = Oz + (Dz * V300),
-    V307 = @torigx(V304, V305, V306),
-    V308 = @torigy(V304, V305, V306),
-    V309 = @torigz(V304, V305, V306),
-    V311 = 1.0 / @sqrt(max((V307 * V307 + V308 * V308 + V309 * V309), 1e-18)).
+    V322 = @torust(Ox, Oy, Oz, Dx, Dy, Dz, T),
+    V323 = min(V322, 5000.0),
+    V327 = Ox + (Dx * V323),
+    V328 = Oy + (Dy * V323),
+    V329 = Oz + (Dz * V323),
+    V330 = @torisdf(V327 + 0.0009, V328 - 0.0009, V329 - 0.0009),
+    V331 = @torisdf(V327 - 0.0009, V328 - 0.0009, V329 + 0.0009),
+    V332 = @torisdf(V327 - 0.0009, V328 + 0.0009, V329 - 0.0009),
+    V333 = @torisdf(V327 + 0.0009, V328 + 0.0009, V329 + 0.0009),
+    V334 = @torigx(V330, V331, V332, V333),
+    V335 = @torigy(V330, V331, V332, V333),
+    V336 = @torigz(V330, V331, V332, V333),
+    V338 = 1.0 / @sqrt(max((V334 * V334 + V335 * V335 + V336 * V336), 1e-18)).
 
-cyl_b2(I, Id, V315, V316, min(V315, min(V316, @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Bx, By, Bz, R)))) :-
+cyl_b2(I, Id, V342, V343, min(V342, min(V343, @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Bx, By, Bz, R)))) :-
     rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz),
     cyl(Id, Ax, Ay, Az, Bx, By, Bz, R),
-    V315 = @cylbody(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, R),
-    V316 = @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Ax, Ay, Az, R).
+    V342 = @cylbody(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, R),
+    V343 = @cylcap(Ox, Oy, Oz, Dx, Dy, Dz, Ax, Ay, Az, Bx, By, Bz, Ax, Ay, Az, R).
 
 cylmin_b2(I, T) :- rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz), T = min X : { cyl_b2(I, _, _, _, X) }.
 
 cylpick_b2(I, Id) :- cylmin_b2(I, T), Id = min K : { cyl_b2(I, K, _, _, T) }.
 
-cyln_b2(I, (V346 + (((V361 * V365) - V346) * V369)), (V347 + (((V362 * V365) - V347) * V369)), (V348 + (((V363 * V365) - V348) * V369))) :-
+cyln_b2(I, (((((V351 * V355) * (1.0 - @eq01(T, TA))) + ((V359 * V363) * @eq01(T, TA))) * (1.0 - V396)) + ((V388 * V392) * V396)), (((((V352 * V355) * (1.0 - @eq01(T, TA))) + ((V360 * V363) * @eq01(T, TA))) * (1.0 - V396)) + ((V389 * V392) * V396)), (((((V353 * V355) * (1.0 - @eq01(T, TA))) + ((V361 * V363) * @eq01(T, TA))) * (1.0 - V396)) + ((V390 * V392) * V396))) :-
     cylpick_b2(I, Id),
     cylmin_b2(I, T),
     rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz),
     cyl(Id, Ax, Ay, Az, Bx, By, Bz, R),
     cyl_b2(I, Id, TB, TA, _),
-    V321 = Ox + (Dx * T),
-    V322 = Oy + (Dy * T),
-    V323 = Oz + (Dz * T),
-    V324 = Bx - Ax,
-    V325 = By - Ay,
-    V326 = Bz - Az,
-    V328 = 1.0 / @sqrt(max((V324 * V324 + V325 * V325 + V326 * V326), 1e-18)),
-    V329 = V324 * V328,
-    V330 = V325 * V328,
-    V331 = V326 * V328,
-    V332 = V324 * -1.0,
-    V333 = V325 * -1.0,
-    V334 = V326 * -1.0,
-    V336 = 1.0 / @sqrt(max((V332 * V332 + V333 * V333 + V334 * V334), 1e-18)),
-    V346 = V329 + (((V332 * V336) - V329) * @eq01(T, TA)),
-    V347 = V330 + (((V333 * V336) - V330) * @eq01(T, TA)),
-    V348 = V331 + (((V334 * V336) - V331) * @eq01(T, TA)),
-    V354 = ((V321 - Ax) * V324 + (V322 - Ay) * V325 + (V323 - Az) * V326) / (V324 * V324 + V325 * V325 + V326 * V326),
-    V361 = V321 - (Ax + (V324 * V354)),
-    V362 = V322 - (Ay + (V325 * V354)),
-    V363 = V323 - (Az + (V326 * V354)),
-    V365 = 1.0 / @sqrt(max((V361 * V361 + V362 * V362 + V363 * V363), 1e-18)),
-    V369 = @eq01(T, TB).
+    V348 = Ox + (Dx * T),
+    V349 = Oy + (Dy * T),
+    V350 = Oz + (Dz * T),
+    V351 = Bx - Ax,
+    V352 = By - Ay,
+    V353 = Bz - Az,
+    V355 = 1.0 / @sqrt(max((V351 * V351 + V352 * V352 + V353 * V353), 1e-18)),
+    V359 = V351 * -1.0,
+    V360 = V352 * -1.0,
+    V361 = V353 * -1.0,
+    V363 = 1.0 / @sqrt(max((V359 * V359 + V360 * V360 + V361 * V361), 1e-18)),
+    V381 = ((V348 - Ax) * V351 + (V349 - Ay) * V352 + (V350 - Az) * V353) / (V351 * V351 + V352 * V352 + V353 * V353),
+    V388 = V348 - (Ax + (V351 * V381)),
+    V389 = V349 - (Ay + (V352 * V381)),
+    V390 = V350 - (Az + (V353 * V381)),
+    V392 = 1.0 / @sqrt(max((V388 * V388 + V389 * V389 + V390 * V390), 1e-18)),
+    V396 = @eq01(T, TB).
 
 sph_b2(I, @spht(Ox, Oy, Oz, Dx, Dy, Dz, 8.65, 0.0, 8.8, 0.5184)) :- rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz).
 
-planet_b2(I, V385, (V397 + (((V400 * V404) - V397) * V408)), (V398 + (((V401 * V404) - V398) * V408)), (V399 + (((V402 * V404) - V399) * V408))) :-
+planet_b2(I, V412, (((V419 * V423) * (1.0 - V435)) + ((V427 * V431) * V435)), (((V420 * V423) * (1.0 - V435)) + ((V428 * V431) * V435)), (((V421 * V423) * (1.0 - V435)) + ((V429 * V431) * V435))) :-
     rod_b2(I, Ox, Oy, Oz, Dx, Dy, Dz),
-    V379 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0),
-    V381 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
-    V382 = @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
-    V383 = @planetentry(V379, V381, V382),
-    V384 = @planetcavity(V379, @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0), V381, V382),
-    V385 = min(V383, V384),
-    V389 = Ox + (Dx * V385),
-    V390 = Oy + (Dy * V385),
-    V391 = Oz + (Dz * V385),
-    V392 = 24.0 - V389,
-    V393 = 6.6 - V390,
-    V394 = 17.0 - V391,
-    V396 = 1.0 / @sqrt(max((V392 * V392 + V393 * V393 + V394 * V394), 1e-18)),
-    V397 = V392 * V396,
-    V398 = V393 * V396,
-    V399 = V394 * V396,
-    V400 = V389 - 24.0,
-    V401 = V390 - 12.0,
-    V402 = V391 - 17.5,
-    V404 = 1.0 / @sqrt(max((V400 * V400 + V401 * V401 + V402 * V402), 1e-18)),
-    V408 = @le01(V383, V384).
+    V406 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0),
+    V408 = @sphnear(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
+    V409 = @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 6.6, 17.0, 19.36),
+    V410 = @planetentry(V406, V408, V409),
+    V411 = @planetcavity(V406, @sphfar(Ox, Oy, Oz, Dx, Dy, Dz, 24.0, 12.0, 17.5, 36.0), V408, V409),
+    V412 = min(V410, V411),
+    V416 = Ox + (Dx * V412),
+    V417 = Oy + (Dy * V412),
+    V418 = Oz + (Dz * V412),
+    V419 = 24.0 - V416,
+    V420 = 6.6 - V417,
+    V421 = 17.0 - V418,
+    V423 = 1.0 / @sqrt(max((V419 * V419 + V420 * V420 + V421 * V421), 1e-18)),
+    V427 = V416 - 24.0,
+    V428 = V417 - 12.0,
+    V429 = V418 - 17.5,
+    V431 = 1.0 / @sqrt(max((V427 * V427 + V428 * V428 + V429 * V429), 1e-18)),
+    V435 = @le01(V410, V411).
 
-comb_b2(I, (as(V428, number) + 2 * as(V429, number)), V420, V425, V426, V427, V478, V479, V480, (Dx - (V471 * V482)), (Dy - (V472 * V482)), (Dz - (V473 * V482)), (V489 * V493), (V490 * V493), (V491 * V493), @sqrt((V489 * V489 + V490 * V490 + V491 * V491)), (V425 + ((V471 + ((V478 - V471) * V429)) * 0.02)), (V426 + ((V472 + ((V479 - V472) * V429)) * 0.02)), (V427 + ((V473 + ((V480 - V473) * V429)) * 0.02)), V428) :-
+comb_b2(I, (as(V455, number) + 2 * as(V456, number)), V447, V452, V453, V454, V505, V506, V507, (Dx - (V498 * V509)), (Dy - (V499 * V509)), (Dz - (V500 * V509)), (V516 * V520), (V517 * V520), (V518 * V520), @sqrt((V516 * V516 + V517 * V517 + V518 * V518)), (V452 + (((V498 * (1.0 - V456)) + (V505 * V456)) * 0.02)), (V453 + (((V499 * (1.0 - V456)) + (V506 * V456)) * 0.02)), (V454 + (((V500 * (1.0 - V456)) + (V507 * V456)) * 0.02)), V455) :-
     rays_b2(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     terr_b2(I, TTerr),
     torus_b2(I, TTor, NTx, NTy, NTz),
@@ -520,44 +515,35 @@ comb_b2(I, (as(V428, number) + 2 * as(V429, number)), V420, V425, V426, V427, V4
     cyln_b2(I, NCx, NCy, NCz),
     sph_b2(I, TSph),
     planet_b2(I, TC, NPx, NPy, NPz),
-    V418 = min(TCyl, min(TSph, TTor)),
-    V419 = min(V418, TC),
-    V420 = min(V419, TTerr),
-    V421 = min(V420, 5000.0),
-    V425 = Ox + (Dx * V421),
-    V426 = Oy + (Dy * V421),
-    V427 = Oz + (Dz * V421),
-    V428 = @lt01(V419, TTerr) * @lt01(V419, 1e8),
-    V429 = @le01(TTerr, V419) * @lt01(TTerr, 1e8),
-    V437 = (Ox + (Dx * TSph)) - 8.65,
-    V438 = (Oy + (Dy * TSph)) - 0.0,
-    V439 = (Oz + (Dz * TSph)) - 8.8,
-    V441 = 1.0 / @sqrt(max((V437 * V437 + V438 * V438 + V439 * V439), 1e-18)),
-    V442 = V437 * V441,
-    V443 = V438 * V441,
-    V444 = V439 * V441,
-    V451 = V442 + ((NCx - V442) * @le01(TCyl, TSph)),
-    V452 = V443 + ((NCy - V443) * @le01(TCyl, TSph)),
-    V453 = V444 + ((NCz - V444) * @le01(TCyl, TSph)),
-    V454 = @le01(TTor, TCyl) * @le01(TTor, TSph),
-    V461 = V451 + ((NTx - V451) * V454),
-    V462 = V452 + ((NTy - V452) * V454),
-    V463 = V453 + ((NTz - V453) * V454),
-    V464 = @lt01(TC, V418),
-    V471 = V461 + ((NPx - V461) * V464),
-    V472 = V462 + ((NPy - V462) * V464),
-    V473 = V463 + ((NPz - V463) * V464),
-    V474 = @terrgx(V425, V426),
-    V475 = @terrgy(V425, V426),
-    V477 = 1.0 / @sqrt(max((V474 * V474 + V475 * V475 + 1.0 * 1.0), 1e-18)),
-    V478 = V474 * V477,
-    V479 = V475 * V477,
-    V480 = 1.0 * V477,
-    V482 = 2.0 * (Dx * V471 + Dy * V472 + Dz * V473),
-    V489 = 9.0 - V425,
-    V490 = -30.0 - V426,
-    V491 = 52.0 - V427,
-    V493 = 1.0 / @sqrt(max((V489 * V489 + V490 * V490 + V491 * V491), 1e-18)).
+    V445 = min(TCyl, min(TSph, TTor)),
+    V446 = min(V445, TC),
+    V447 = min(V446, TTerr),
+    V448 = min(V447, 5000.0),
+    V452 = Ox + (Dx * V448),
+    V453 = Oy + (Dy * V448),
+    V454 = Oz + (Dz * V448),
+    V455 = @lt01(V446, TTerr) * @lt01(V446, 1e8),
+    V456 = @le01(TTerr, V446) * @lt01(TTerr, 1e8),
+    V464 = (Ox + (Dx * TSph)) - 8.65,
+    V465 = (Oy + (Dy * TSph)) - 0.0,
+    V466 = (Oz + (Dz * TSph)) - 8.8,
+    V468 = 1.0 / @sqrt(max((V464 * V464 + V465 * V465 + V466 * V466), 1e-18)),
+    V481 = @le01(TTor, TCyl) * @le01(TTor, TSph),
+    V491 = @lt01(TC, V445),
+    V498 = ((((((V464 * V468) * (1.0 - @le01(TCyl, TSph))) + (NCx * @le01(TCyl, TSph))) * (1.0 - V481)) + (NTx * V481)) * (1.0 - V491)) + (NPx * V491),
+    V499 = ((((((V465 * V468) * (1.0 - @le01(TCyl, TSph))) + (NCy * @le01(TCyl, TSph))) * (1.0 - V481)) + (NTy * V481)) * (1.0 - V491)) + (NPy * V491),
+    V500 = ((((((V466 * V468) * (1.0 - @le01(TCyl, TSph))) + (NCz * @le01(TCyl, TSph))) * (1.0 - V481)) + (NTz * V481)) * (1.0 - V491)) + (NPz * V491),
+    V501 = @terrgx(V452, V453),
+    V502 = @terrgy(V452, V453),
+    V504 = 1.0 / @sqrt(max((V501 * V501 + V502 * V502 + 1.0 * 1.0), 1e-18)),
+    V505 = V501 * V504,
+    V506 = V502 * V504,
+    V507 = 1.0 * V504,
+    V509 = 2.0 * (Dx * V498 + Dy * V499 + Dz * V500),
+    V516 = 9.0 - V452,
+    V517 = -30.0 - V453,
+    V518 = 52.0 - V454,
+    V520 = 1.0 / @sqrt(max((V516 * V516 + V517 * V517 + V518 * V518), 1e-18)).
 
 srod_b2(I, SOx, SOy, SOz, LDx, LDy, LDz, DistL) :- comb_b2(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror), Kind > 0.
 
@@ -579,34 +565,34 @@ lit_b2(I, 0.0) :- shadow_b2(I).
 
 lit_b2(I, 1.0) :- srod_b2(I, _, _, _, _, _, _, _), !shadow_b2(I).
 
-rays_b3(I, (Ox + ((SOx - Ox) * IsMirror)), (Oy + ((SOy - Oy) * IsMirror)), (Oz + ((SOz - Oz) * IsMirror)), (Dx + ((RDx - Dx) * IsMirror)), (Dy + ((RDy - Dy) * IsMirror)), (Dz + ((RDz - Dz) * IsMirror)), (Thr * (1.0 - 0.28 * IsMirror)), (Accx + V516), (Accy + V516), (Accz + V516)) :-
+rays_b3(I, ((Ox * (1.0 - IsMirror)) + (SOx * IsMirror)), ((Oy * (1.0 - IsMirror)) + (SOy * IsMirror)), ((Oz * (1.0 - IsMirror)) + (SOz * IsMirror)), ((Dx * (1.0 - IsMirror)) + (RDx * IsMirror)), ((Dy * (1.0 - IsMirror)) + (RDy * IsMirror)), ((Dz * (1.0 - IsMirror)) + (RDz * IsMirror)), (Thr * (1.0 - 0.28 * IsMirror)), (Accx + V543), (Accy + V543), (Accz + V543)) :-
     rays_b2(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     comb_b2(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror),
     Kind = 1,
     lit_b2(I, Lit),
-    V516 = 1.0 * (Thr * (@power(max((LDx * RDx + LDy * RDy + LDz * RDz), 0.0), 60.0) * Lit) * IsMirror).
+    V543 = 1.0 * (Thr * (@power(max((LDx * RDx + LDy * RDy + LDz * RDz), 0.0), 60.0) * Lit) * IsMirror).
 
-done(I, (Accx + (((@satbc(V553, V554, V555, V553) * V556) + (0.66 * V541)) * Thr)), (Accy + (((@satbc(V553, V554, V555, V554) * V556) + (0.78 * V541)) * Thr)), (Accz + (((@satbc(V553, V554, V555, V555) * V556) + (0.96 * V541)) * Thr))) :-
+done(I, (Accx + (((@satbc(V580, V581, V582, V580) * V583) + (0.66 * V568)) * Thr)), (Accy + (((@satbc(V580, V581, V582, V581) * V583) + (0.78 * V568)) * Thr)), (Accz + (((@satbc(V580, V581, V582, V582) * V583) + (0.96 * V568)) * Thr))) :-
     rays_b2(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     comb_b2(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror),
     Kind = 2,
     lit_b2(I, Lit),
-    V541 = min(1.0, max(0.0, (THit - 70.0) / 160.0)),
-    V542 = 0.26 + 0.18 * max(TNz, 0.0),
-    V546 = 1.45 * (max((LDx * TNx + LDy * TNy + LDz * TNz), 0.0) * Lit),
-    V553 = @terrcolx(HPz) * ((0.45 * V542) + (1.06 * V546)),
-    V554 = @terrcoly(HPz) * ((0.56 * V542) + (0.97 * V546)),
-    V555 = @terrcolz(HPz) * ((0.8 * V542) + (0.82 * V546)),
-    V556 = 1.0 - V541.
+    V568 = min(1.0, max(0.0, (THit - 70.0) / 160.0)),
+    V569 = 0.26 + 0.18 * max(TNz, 0.0),
+    V573 = 1.45 * (max((LDx * TNx + LDy * TNy + LDz * TNz), 0.0) * Lit),
+    V580 = @terrcolx(HPz) * ((0.45 * V569) + (1.06 * V573)),
+    V581 = @terrcoly(HPz) * ((0.56 * V569) + (0.97 * V573)),
+    V582 = @terrcolz(HPz) * ((0.8 * V569) + (0.82 * V573)),
+    V583 = 1.0 - V568.
 
 done(I, (Accx + (@skyx(Dz) * Thr)), (Accy + (@skyy(Dz) * Thr)), (Accz + (@skyz(Dz) * Thr))) :-
     rays_b2(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
     comb_b2(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, SOx, SOy, SOz, IsMirror),
     Kind = 0.
 
-done(I, (Accx + (@skyx(Dz) * V578)), (Accy + (@skyy(Dz) * V578)), (Accz + (@skyz(Dz) * V578))) :-
+done(I, (Accx + (@skyx(Dz) * V605)), (Accy + (@skyy(Dz) * V605)), (Accz + (@skyz(Dz) * V605))) :-
     rays_b3(I, Ox, Oy, Oz, Dx, Dy, Dz, Thr, Accx, Accy, Accz),
-    V578 = Thr * 1.0.
+    V605 = Thr * 1.0.
 
 pixel(I, @tonemap(Accx), @tonemap(Accy), @tonemap(Accz)) :- done(I, Accx, Accy, Accz).
 .output pixel

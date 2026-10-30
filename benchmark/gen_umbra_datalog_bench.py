@@ -18,8 +18,8 @@ written as Soufflé-style Datalog instead of SQL:
 Datalog values cannot be arrays, so the SQL functions take and return scalars;
 a vector-valued helper becomes one function per component (e.g. the torus
 normal's gradient toriGx/Gy/Gz). Every floating-point operation mirrors the SQL
-port, down to its numeric(…) camera arithmetic and the sentinel normals that the
-SQL mix() chains read, so the image is byte-identical to the SQL port on the same
+port, down to its double-precision camera arithmetic and the sentinel normals that
+the SQL sel() chains read, so the image is byte-identical to the SQL port on the same
 Umbra build.
 
 The function bodies are queries (AS 'SELECT expr'), as in PostgreSQL; this needs
@@ -38,7 +38,6 @@ at ~170 GB of allocations.
 Usage:  gen_umbra_datalog_bench.py [W] [H] [DEPTH]   (default 48 24 2)
 """
 import math, re, sys
-from decimal import Decimal
 import primfont2
 
 W     = int(sys.argv[1]) if len(sys.argv) > 1 else 48
@@ -105,10 +104,13 @@ sqlfn("clamp01", "x",       "greatest(0.0, least(1.0, x))")
 for name, op in (("lt01", "<"), ("le01", "<="), ("eq01", "=")):
     sqlfn(name, "x, y", f"CASE WHEN x {op} y THEN 1.0::double precision ELSE 0.0::double precision END")
 
-# -- camera ray components (numeric arithmetic, as in the SQL port) and tone mapping
-sqlfn("camU", "g bigint", f"((((g % {W}) + 0.5) / {f(W)} * 2.0 - 1.0) * {f(ASPECT)} * {f(TANH)})::double precision")
-sqlfn("camV", "g bigint", f"((1.0 - ((g / {W})::int + 0.5) / {f(H)} * 2.0) * {f(TANH)})::double precision")
-sqlfn("tonemap", "c", "round(clamp01(power(greatest(c, 0.0) * 1.15, 1.0/2.2)) * 255)::bigint", returns="bigint")
+# -- camera ray components (double precision, as in the SQL port and the reference) and tone mapping
+DBL = "double precision"
+sqlfn("camU", "g bigint", f"(((g % {W})::{DBL} + 0.5) / {W}.0::{DBL} * 2.0 - 1.0) * ({W}.0::{DBL} / {H}.0::{DBL})"
+                          f" * tan(36.0::{DBL} * 0.5 * pi() / 180.0)")
+sqlfn("camV", "g bigint", f"(1.0 - ((g / {W})::{DBL} + 0.5) / {H}.0::{DBL} * 2.0) * tan(36.0::{DBL} * 0.5 * pi() / 180.0)")
+sqlfn("tonemap", "c", "round(clamp01(power(greatest(c, 0.0) * 1.15::double precision, 1.0::double precision / 2.2::double precision))"
+                      " * 255.0::double precision)::bigint", returns="bigint")
 
 # -- terrain: the integer LCG hash of every port, value noise, fbm, height, gradient
 sqlfn("hashf", "ix bigint, iy bigint",
@@ -153,9 +155,11 @@ for t in reversed(terms[:-1]):
 sqlfn("toriSDF", "px, py, pz", acc)
 sqlfn("toriAt", "ox, oy, oz, dx, dy, dz, t", "toriSDF(ox + dx * t, oy + dy * t, oz + dz * t)")
 E = "0.0009"
-sqlfn("toriGx", "px, py, pz", f"toriSDF(px + {E}, py, pz) - toriSDF(px - {E}, py, pz)")
-sqlfn("toriGy", "px, py, pz", f"toriSDF(px, py + {E}, pz) - toriSDF(px, py - {E}, pz)")
-sqlfn("toriGz", "px, py, pz", f"toriSDF(px, py, pz + {E}) - toriSDF(px, py, pz - {E})")
+# the normal's gradient by the reference's tetrahedral estimate: the SDF at
+# p + (e,-e,-e), (-e,-e,e), (-e,e,-e), (e,e,e) (a, b, c, d), weighted by those signs
+sqlfn("toriGx", "a, b, c, d", "(a - b) + (d - c)")
+sqlfn("toriGy", "a, b, c, d", "(-a - b) + (c + d)")
+sqlfn("toriGz", "a, b, c, d", "(b - a) + (d - c)")
 sqlfn("torusT", "ox, oy, oz, dx, dy, dz, t",
       "CASE WHEN toriAt(ox, oy, oz, dx, dy, dz, t) < 0.01 AND t > 0.002 AND t < 260.0 THEN t ELSE 1e9 END")
 
@@ -256,6 +260,9 @@ def vd(b, x, y):  return b.let(f"{x[0]} * {y[0]} + {x[1]} * {y[1]} + {x[2]} * {y
 def vn(b, x):     return vm(b, x, b.let(f"1.0 / @sqrt(max({vd(b, x, x)}, 1e-18))"))
 def vref(b, d, n): return vs(b, d, vm(b, n, b.let(f"2.0 * {vd(b, d, n)}")))
 def mix(b, x, y, t): return va(b, x, vm(b, vs(b, y, x), t))
+def sel(b, x, y, c): return va(b, vm(b, x, f"(1.0 - {c})"), vm(b, y, c))   # x (c = 0) or y (c = 1), exactly
+def vc(b, x, y):  return b.vlet([f"{x[1]} * {y[2]} - {x[2]} * {y[1]}", f"{x[2]} * {y[0]} - {x[0]} * {y[2]}",
+                                 f"{x[0]} * {y[1]} - {x[1]} * {y[0]}"])
 def pt(b, o, d, t): return va(b, o, vm(b, d, t))
 def call(fn, *args): return f"@{fn.lower()}({', '.join(args)})"    # SQL keeps unquoted names in lower case
 
@@ -308,7 +315,7 @@ def emit_bounce(Sx):
     decl(f"terr_{Sx}_hit", "i: number, t: float8")
     rules.append(f"terr_{Sx}_hit(I, PT + (T - PT) * PD / (PD - DC)) :- {me_atom}, PD > 0.0, DC <= 0.0.")
     # no crossing and not escaping upwards: take the next step
-    rules.append(f"{m}(I, T + max(0.06, T * 0.035), T, DC, It + 1) :-\n"
+    rules.append(f"{m}(I, T + max(0.45, T * 0.008), T, DC, It + 1) :-\n"
                  f"    {me_atom}, {ray_atom(rod)}, !(PD > 0.0, DC <= 0.0), !(Oz + T * Dz > 1.55, Dz >= 0.0).")
     # the hit, or the sentinel for a ray that never crosses the surface
     decl(f"terr_{Sx}", "i: number, t: float8")
@@ -321,7 +328,9 @@ def emit_bounce(Sx):
     b = Body(f"tmar_{Sx}(I, T, 48)", ray_atom(rod))
     tt = b.let(call("torusT", *OD, "T"))
     p = pt(b, O, D, b.let(f"min({tt}, 5000.0)"))
-    n = vn(b, tuple(b.let(call(g, *p)) for g in ("toriGx", "toriGy", "toriGz")))
+    sdf = [b.let(call("toriSDF", f"{p[0]} {sx} {E}", f"{p[1]} {sy} {E}", f"{p[2]} {sz} {E}"))
+           for sx, sy, sz in (("+", "-", "-"), ("-", "-", "+"), ("-", "+", "-"), ("+", "+", "+"))]
+    n = vn(b, tuple(b.let(call(g, *sdf)) for g in ("toriGx", "toriGy", "toriGz")))
     rules.append(b.rule(f"torus_{Sx}(I, {tt}, {', '.join(n)})"))
 
     # -- cylinders: body and cap hits per ray and cylinder, the nearest (ties: lowest id), its normal
@@ -339,9 +348,9 @@ def emit_bounce(Sx):
     b = Body(f"cylpick_{Sx}(I, Id)", f"cylmin_{Sx}(I, T)", ray_atom(rod), CYL, f"{cy}(I, Id, TB, TA, _)")
     A, B = AB[:3], AB[3:]
     hp, ba = pt(b, O, D, "T"), vs(b, B, A)
-    m1 = mix(b, vn(b, ba), vn(b, vm(b, ba, "-1.0")), call("eq01", "T", "TA"))
+    m1 = sel(b, vn(b, ba), vn(b, vm(b, ba, "-1.0")), call("eq01", "T", "TA"))
     side = vn(b, vs(b, hp, va(b, A, vm(b, ba, b.let(f"{vd(b, vs(b, hp, A), ba)} / {vd(b, ba, ba)}")))))
-    n = mix(b, m1, side, b.let(call("eq01", "T", "TB")))
+    n = sel(b, m1, side, b.let(call("eq01", "T", "TB")))
     rules.append(b.rule(f"cyln_{Sx}(I, {', '.join(n)})"))
 
     # -- the i-dot sphere and the planet (a sphere with a spherical cavity)
@@ -354,7 +363,7 @@ def emit_bounce(Sx):
     ce, cc = b.let(call("planetEntry", an, bn, bf)), b.let(call("planetCavity", an, af, bn, bf))
     tc = b.let(f"min({ce}, {cc})")
     hp = pt(b, O, D, tc)
-    n = mix(b, vn(b, vs(b, vec(CSGB), hp)), vn(b, vs(b, hp, vec(CSGA))), b.let(call("le01", ce, cc)))
+    n = sel(b, vn(b, vs(b, vec(CSGB), hp)), vn(b, vs(b, hp, vec(CSGA))), b.let(call("le01", ce, cc)))
     rules.append(b.rule(f"planet_{Sx}(I, {tc}, {', '.join(n)})"))
 
     # -- nearest hit, surface normal, shadow ray and reflected ray (SQL comb_*)
@@ -372,15 +381,15 @@ def emit_bounce(Sx):
     isterr = b.let(f"{call('le01', 'TTerr', tm)} * {call('lt01', 'TTerr', '1e8')}")
     kind = b.let(f"as({ismirror}, number) + 2 * as({isterr}, number)")    # 1 mirror, 2 terrain, 0 miss
     nsph = vn(b, vs(b, pt(b, O, D, "TSph"), vec(SPHC)))
-    sn = mix(b, nsph, ("NCx", "NCy", "NCz"), call("le01", "TCyl", "TSph"))
-    sn = mix(b, sn, ("NTx", "NTy", "NTz"), b.let(f"{call('le01', 'TTor', 'TCyl')} * {call('le01', 'TTor', 'TSph')}"))
-    sn = mix(b, sn, ("NPx", "NPy", "NPz"), b.let(call("lt01", "TC", tlet)))
+    sn = sel(b, nsph, ("NCx", "NCy", "NCz"), call("le01", "TCyl", "TSph"))
+    sn = sel(b, sn, ("NTx", "NTy", "NTz"), b.let(f"{call('le01', 'TTor', 'TCyl')} * {call('le01', 'TTor', 'TSph')}"))
+    sn = sel(b, sn, ("NPx", "NPy", "NPz"), b.let(call("lt01", "TC", tlet)))
     tn = vn(b, (b.let(call("terrGx", hp[0], hp[1])), b.let(call("terrGy", hp[0], hp[1])), "1.0"))
     rd = vref(b, D, sn)
     tol = vs(b, vec(LIGHT), hp)
     ld = vn(b, tol)
     distl = b.let(f"@sqrt({vd(b, tol, tol)})")
-    so = va(b, hp, vm(b, mix(b, sn, tn, isterr), "0.02"))
+    so = va(b, hp, vm(b, sel(b, sn, tn, isterr), "0.02"))
     rules.append(b.rule(f"{cb}(I, {kind}, {thit}, {', '.join(hp)}, {', '.join(tn)}, {', '.join(rd)}, "
                         f"{', '.join(ld)}, {distl}, {', '.join(so)}, {ismirror})"))
     cb_atom = (f"{cb}(I, Kind, THit, HPx, HPy, HPz, TNx, TNy, TNz, RDx, RDy, RDz, LDx, LDy, LDz, DistL, "
@@ -412,8 +421,8 @@ def emit_bounce(Sx):
     spec = b.let(f"@power(max({vd(b, ('LDx', 'LDy', 'LDz'), ('RDx', 'RDy', 'RDz'))}, 0.0), 60.0) * Lit")
     s = b.let(f"1.0 * (Thr * {spec} * IsMirror)")
     acc = va(b, ("Accx", "Accy", "Accz"), (s, s, s))
-    o2 = mix(b, O, ("SOx", "SOy", "SOz"), "IsMirror")
-    d2 = mix(b, D, ("RDx", "RDy", "RDz"), "IsMirror")
+    o2 = sel(b, O, ("SOx", "SOy", "SOz"), "IsMirror")
+    d2 = sel(b, D, ("RDx", "RDy", "RDz"), "IsMirror")
     thr2 = b.let("Thr * (1.0 - 0.28 * IsMirror)")
     rules.append(b.rule(f"{nxt}(I, {', '.join(o2)}, {', '.join(d2)}, {thr2}, {', '.join(acc)})"))
     b = Body(rays_atom, cb_atom, "Kind = 2", f"lit_{Sx}(I, Lit)")
@@ -437,13 +446,16 @@ def sky(): return tuple(call(f"sky{a}", "Dz") for a in "xyz")
 decl("cyl", "id: number, " + cols3("a") + ", " + cols3("b") + ", r: float8")
 facts = [f"cyl({k}, {', '.join(vec(c[:3]))}, {', '.join(vec(c[3:6]))}, {f(c[6])})." for k, c in enumerate(cyls)]
 decl("step", "s: float8")
-facts += [f"step({Decimal('0.3') + i * Decimal('0.6')})." for i in range(24)]
+facts += [f"step({repr(0.3 + i * 0.6)})." for i in range(24)]   # in double precision, as the reference
 decl("done", "i: number, " + cols3("acc"))
 
 # ---- camera: primary rays through the pixel centres ----
 decl("rays_b1", RAY + ", thr: float8, " + cols3("acc"))
 b = Body(f"I = range(0, {W * H})")
-d0 = vn(b, va(b, vec(FWD), va(b, vm(b, vec(RIGHT), b.let("@camu(I)")), vm(b, vec(UP), b.let("@camv(I)")))))
+fwd = vn(b, vs(b, vec(TARGET), vec(EYE)))          # the camera basis at run time, as the reference
+right = vn(b, vc(b, fwd, ("0.0", "0.0", "1.0")))
+up = vc(b, right, fwd)
+d0 = vn(b, va(b, fwd, va(b, vm(b, right, b.let("@camu(I)")), vm(b, up, b.let("@camv(I)")))))
 rules.append(b.rule(f"rays_b1(I, {', '.join(vec(EYE))}, {', '.join(d0)}, 1.0, 0.0, 0.0, 0.0)"))
 
 rays = "rays_b1"

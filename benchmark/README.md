@@ -24,6 +24,7 @@ uniform dump is what we diff and render; only ClickHouse can also emit a real PN
 ```
 benchmark/
 ├── gen_clickhouse_bench.py   # emits the ClickHouse query (portable hash, PNG or TSV output)
+├── gen_serenedb_bench.py     # emits the DuckDB port for SereneDB (tuples, DOUBLE constants, wrap)
 ├── gen_cedardb_bench.py      # emits the CedarDB recursive-CTE port (args: W H DEPTH)
 ├── gen_duckdb_bench.py       # emits the DuckDB port (does not compile; kept as evidence)
 ├── primfont2.py              # the glyph geometry (shared)
@@ -44,6 +45,11 @@ benchmark/
 python3 gen_clickhouse_bench.py 2560 1200 2 data > queries/clickhouse.sql   # depth 2; W/H are runtime params
 clickhouse local --param_W 2560 --param_H 1200 --queries-file queries/clickhouse.sql > out/clickhouse.tsv
 python3 tools.py render out/clickhouse.tsv 2560 1200 out/clickhouse_full.png
+
+# SereneDB port (Postgres wire protocol; here on host port 7890)
+python3 gen_serenedb_bench.py 2560 1200 2 > queries/serenedb_full.sql
+psql -h 127.0.0.1 -p 7890 -U postgres -q -f queries/serenedb_full.sql > out/serenedb.tsv
+python3 tools.py render out/serenedb.tsv 2560 1200 out/serenedb_full.png
 
 # CedarDB port (Postgres wire protocol; here on host port 5499)
 python3 gen_cedardb_bench.py 2560 1200 2 > queries/cedardb.sql
@@ -66,6 +72,7 @@ reference:
 | Engine | Port approach | Status |
 |---|---|---|
 | **ClickHouse** | `arrayFold` + `arrayMap` lambdas + tuple math | ✅ reference; **fastest** (all cores, no `ORDER BY` pin, `optimize_and_compare_chain = 0`; see finding 1) |
+| **SereneDB** | the DuckDB port with ClickHouse's tuples and Float64 constants (not LISTs and DECIMALs) + `SET integer_overflow = 'wrap'` | ✅ compiles & runs at full resolution; pixel-identical to the ClickHouse reference |
 | **CedarDB** | recursive-CTE marches + set-based hits + SQL functions | ✅ matches reference; compiles & runs (see below) |
 | **DuckDB** | `CREATE MACRO` + `list_reduce`/`list_transform` | ❌ planner can't compile a multi-march query — fails at *any* size, including 192 × 90 (see below) |
 | **Postgres** | no SQL lambdas/HOFs → recursive CTE + PL/pgSQL | ✅ ported, matches reference; full render *projected* at **~1.5 days** (see below) |
